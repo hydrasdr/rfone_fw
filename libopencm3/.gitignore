@@ -1,0 +1,22 @@
+*.d
+*.o
+*.bin
+*.hex
+*.list
+*.srec
+*.a
+*.elf
+lib/*.ld
+*.swp
+\#*
+.\#*
+*~
+*.map
+*.log
+html/
+latex/
+*.pdf
+*.tag
+.DS_Store
+# These are generated
+include/libopencmsis/lpc43xx/
