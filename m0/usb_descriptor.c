@@ -1,6 +1,6 @@
 /*
  * Copyright 2012 Jared Boone
- * Copyright 2013-2024 Benjamin Vernoux <bvernoux@hydrasdr.com>
+ * Copyright 2013-2025 Benjamin Vernoux <bvernoux@hydrasdr.com>
  *
  * This file is part of HydraSDR (based on HackRF project).
  *
@@ -26,8 +26,8 @@
 #include "hydrasdr_commands.h"
 #include "usb_descriptor.h"
 
-#define USB_VENDOR_ID  (0x1D50)
-#define USB_PRODUCT_ID (0x60A1)
+#define USB_VENDOR_ID  (0x38AF) // usb.org VID VERNOUX BENJAMIN
+#define USB_PRODUCT_ID (0x0001) // PID HydraSDR RFOne
 
 #define USB_WORD(x) (x & 0xFF), ((x >> 8) & 0xFF)
 
@@ -178,16 +178,22 @@ uint8_t usb_descriptor_string_manufacturer[] =
 
 uint8_t usb_descriptor_string_product[] =
 {
-  18,                         // bLength
+  30,                         // bLength
   USB_DESCRIPTOR_TYPE_STRING, // bDescriptorType
   'H', 0x00, /* 4  */
-  'Y', 0x00, /* 6  */
-  'D', 0x00, /* 8  */
-  'R', 0x00, /* 10 */
-  'A', 0x00, /* 12 */
+  'y', 0x00, /* 6  */
+  'd', 0x00, /* 8  */
+  'r', 0x00, /* 10 */
+  'a', 0x00, /* 12 */
   'S', 0x00, /* 14 */
   'D', 0x00, /* 16 */
-  'R', 0x00  /* 18 */
+  'R', 0x00, /* 18 */
+  ' ', 0x00, /* 20  */
+  'R', 0x00, /* 22  */
+  'F', 0x00, /* 24  */
+  'O', 0x00, /* 26  */
+  'n', 0x00, /* 28  */
+  'e', 0x00  /* 30  */
 };
 
 /* 64bits Serial Number from SPIFI */

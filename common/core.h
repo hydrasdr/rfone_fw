@@ -33,7 +33,7 @@ extern "C"
 #include <libopencm3/lpc43xx/cgu.h>
 
 /* hardware identification number */
-#define BOARD_ID_HYDRASDR  0
+#define BOARD_ID_HYDRASDR 1 /* HydraSDR RFOne Official Board usb.org VID 14511/0x38af VERNOUX BENJAMIN / PID 0x0001 */
 #define BOARD_ID BOARD_ID_HYDRASDR
 
 /*
