@@ -1,3 +1,12 @@
+# Copyright (c) 2025, Benjamin Vernoux <bvernoux@hydrasdr.com>
+# 
+# This workflow is licensed exclusively for HydraSDR products and related development.
+# Unauthorized use, modification, or distribution for non-HydraSDR products is prohibited.
+# All rights reserved.
+#
+# HydraSDR RFOne Firmware Build and Release Workflow
+# For more information about HydraSDR products: https://hydrasdr.com
+
 name: Build HydraSDR RFOne Firmware
 
 on:
@@ -26,8 +35,24 @@ jobs:
     
     - name: Install system dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-multilib git dfu-util python3 python3-pip zip unzip curl jq
+        echo "Checking pre-installed packages..."
+        MISSING_PACKAGES=""
+        
+        for pkg in gcc-multilib git dfu-util python3 python3-pip zip unzip curl jq; do
+          if ! dpkg -l | grep -q "^ii  $pkg "; then
+            MISSING_PACKAGES="$MISSING_PACKAGES $pkg"
+          else
+            echo "✓ $pkg already installed"
+          fi
+        done
+        
+        if [ -n "$MISSING_PACKAGES" ]; then
+          echo "Installing missing packages:$MISSING_PACKAGES"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $MISSING_PACKAGES
+        else
+          echo "All required packages already installed"
+        fi
     
     - name: Download and setup GCC ARM toolchain
       if: steps.cache-gcc-arm.outputs.cache-hit != 'true'
@@ -69,326 +94,529 @@ jobs:
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "Firmware version: $VERSION"
     
-    - name: Get rfone_host version
+    - name: Download rfone_host release assets
       run: |
-        HOST_VERSION=$(curl -s https://api.github.com/repos/hydrasdr/rfone_host/releases/latest | jq -r '.tag_name')
-        echo "RFONE_HOST_VERSION=$HOST_VERSION" >> $GITHUB_ENV
-        echo "Host tools version: $HOST_VERSION"
-    
-    - name: Check available rfone_host assets
-      run: |
-        echo "Checking available assets for rfone_host ${{ env.RFONE_HOST_VERSION }}..."
-        RELEASE_INFO=$(curl -s https://api.github.com/repos/hydrasdr/rfone_host/releases/latest)
+        echo "Downloading RFOne Host Tools..."
         
-        echo "Available assets:"
-        echo "$RELEASE_INFO" | jq -r '.assets[].name' | sort
-        
-        ZIP_COUNT=$(echo "$RELEASE_INFO" | jq -r '.assets[].name' | grep -c '\.zip$' || echo "0")
-        echo "Number of zip assets found: $ZIP_COUNT"
-        
-        if [ "$ZIP_COUNT" -eq 0 ]; then
-          echo "ERROR: No binary releases found for rfone_host ${{ env.RFONE_HOST_VERSION }}"
-          echo "Only source code appears to be available."
-          exit 1
+        if ! RELEASE_INFO=$(curl -s https://api.github.com/repos/hydrasdr/rfone_host/releases/latest); then
+          echo "❌ Failed to fetch release info from GitHub API"
+          echo "RFONE_HOST_VERSION=none" >> $GITHUB_ENV  
+          echo "RFONE_HOST_AVAILABLE=false" >> $GITHUB_ENV
+          exit 0
         fi
         
-        echo "$RELEASE_INFO" > /tmp/rfone_host_release.json
-    
-    - name: Download rfone_host binaries
-      run: |
+        if echo "$RELEASE_INFO" | jq . >/dev/null 2>&1; then
+          HOST_VERSION=$(echo "$RELEASE_INFO" | jq -r '.tag_name // "none"')
+        else
+          echo "❌ Invalid API response"
+          HOST_VERSION="none"
+        fi
+        
+        if [ "$HOST_VERSION" = "none" ] || [ "$HOST_VERSION" = "null" ] || [ -z "$HOST_VERSION" ]; then
+          echo "❌ No valid rfone_host release found"
+          echo "RFONE_HOST_VERSION=none" >> $GITHUB_ENV  
+          echo "RFONE_HOST_AVAILABLE=false" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        echo "✓ Found rfone_host release: $HOST_VERSION"
+        echo "RFONE_HOST_VERSION=$HOST_VERSION" >> $GITHUB_ENV
+        
+        echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | endswith(".zip")) | .name' > available_assets.txt
+        
+        if [ ! -s available_assets.txt ]; then
+          echo "❌ No .zip assets found in release"
+          echo "RFONE_HOST_AVAILABLE=false" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        echo "Available assets:"
+        cat available_assets.txt
+        
         mkdir -p rfone_host_binaries
         cd rfone_host_binaries
         
-        ASSETS=$(cat /tmp/rfone_host_release.json | jq -r '.assets[] | select(.name | endswith(".zip")) | .name')
+        DOWNLOADED_ASSETS=0
         
-        echo "Available binary assets:"
-        echo "$ASSETS"
-        
-        FOUND_WINDOWS=false
-        FOUND_LINUX=false
-        
-        for asset in $ASSETS; do
-          echo "Checking asset: $asset"
-          
-          if [[ "$asset" =~ [Ww]indows ]] || [[ "$asset" =~ [Ww]in64 ]] || [[ "$asset" =~ [Ww]in32 ]]; then
-            echo "Found Windows binary: $asset"
-            curl -f -L -o "windows.zip" "https://github.com/hydrasdr/rfone_host/releases/download/${{ env.RFONE_HOST_VERSION }}/$asset"
-            FOUND_WINDOWS=true
+        while IFS= read -r asset; do
+          if [ -z "$asset" ]; then
+            continue
           fi
           
-          if [[ "$asset" =~ [Uu]buntu.*22 ]] || [[ "$asset" =~ 22\.04 ]]; then
-            echo "Found Ubuntu 22.04 binary: $asset"
-            curl -f -L -o "ubuntu-22.zip" "https://github.com/hydrasdr/rfone_host/releases/download/${{ env.RFONE_HOST_VERSION }}/$asset"
-            FOUND_LINUX=true
-          fi
+          download_url="https://github.com/hydrasdr/rfone_host/releases/download/$HOST_VERSION/$asset"
+          echo "Processing: $asset"
           
-          if [[ "$asset" =~ [Uu]buntu.*24 ]] || [[ "$asset" =~ 24\.04 ]]; then
-            echo "Found Ubuntu 24.04 binary: $asset"
-            curl -f -L -o "ubuntu-24.zip" "https://github.com/hydrasdr/rfone_host/releases/download/${{ env.RFONE_HOST_VERSION }}/$asset"
-            FOUND_LINUX=true
+          if [[ "$asset" =~ [Ww]indows ]] || [[ "$asset" =~ [Ww]in32 ]] || [[ "$asset" =~ [Ww]in64 ]]; then
+            if curl -f -L -o "windows.zip" "$download_url"; then
+              echo "✓ Windows tools downloaded"
+              DOWNLOADED_ASSETS=$((DOWNLOADED_ASSETS + 1))
+            fi
+            
+          elif [[ "$asset" =~ [Uu]buntu.*22 ]] || [[ "$asset" =~ 22\.04 ]]; then
+            if curl -f -L -o "ubuntu-22.zip" "$download_url"; then
+              echo "✓ Ubuntu 22.04 tools downloaded"
+              DOWNLOADED_ASSETS=$((DOWNLOADED_ASSETS + 1))
+            fi
+            
+          elif [[ "$asset" =~ [Uu]buntu.*24 ]] || [[ "$asset" =~ 24\.04 ]]; then
+            if curl -f -L -o "ubuntu-24.zip" "$download_url"; then
+              echo "✓ Ubuntu 24.04 tools downloaded"
+              DOWNLOADED_ASSETS=$((DOWNLOADED_ASSETS + 1))
+            fi
+            
+          elif [[ "$asset" =~ [Ll]inux ]] && [[ ! "$asset" =~ [Uu]buntu ]]; then
+            if curl -f -L -o "linux.zip" "$download_url"; then
+              echo "✓ Generic Linux tools downloaded"
+              DOWNLOADED_ASSETS=$((DOWNLOADED_ASSETS + 1))
+            fi
           fi
-          
-          if [[ "$asset" =~ [Ll]inux ]] && [[ ! "$asset" =~ [Uu]buntu ]]; then
-            echo "Found generic Linux binary: $asset"
-            curl -f -L -o "linux.zip" "https://github.com/hydrasdr/rfone_host/releases/download/${{ env.RFONE_HOST_VERSION }}/$asset"
-            FOUND_LINUX=true
+        done < ../available_assets.txt
+        
+        echo "Extracting downloaded tools..."
+        EXTRACTED_PLATFORMS=0
+        
+        for zipfile in *.zip; do
+          if [ -f "$zipfile" ]; then
+            dirname="${zipfile%.zip}"
+            if unzip -q "$zipfile" -d "$dirname/"; then
+              if find "$dirname" -name "*spiflash*" -type f | head -1 > /dev/null; then
+                echo "✓ Extracted $dirname with spiflash binary"
+                EXTRACTED_PLATFORMS=$((EXTRACTED_PLATFORMS + 1))
+              fi
+            fi
           fi
         done
         
-        echo "Download summary:"
-        echo "Windows: $FOUND_WINDOWS"
-        echo "Linux: $FOUND_LINUX"
-        
-        if [ "$FOUND_WINDOWS" = false ]; then
-          echo "ERROR: No Windows binaries found"
-          exit 1
+        # Create fallback mappings for missing distributions
+        if [ ! -d "ubuntu-22" ] && [ -d "linux" ]; then
+          cp -r linux ubuntu-22
+          echo "✓ Using generic linux tools for Ubuntu 22.04"
+          EXTRACTED_PLATFORMS=$((EXTRACTED_PLATFORMS + 1))
         fi
         
-        if [ "$FOUND_LINUX" = false ]; then
-          echo "ERROR: No Linux binaries found"
-          exit 1
+        if [ ! -d "ubuntu-24" ] && [ -d "linux" ]; then
+          cp -r linux ubuntu-24  
+          echo "✓ Using generic linux tools for Ubuntu 24.04"
+          EXTRACTED_PLATFORMS=$((EXTRACTED_PLATFORMS + 1))
         fi
         
-        echo "Downloaded files:"
-        ls -la *.zip 2>/dev/null || echo "No zip files downloaded"
-    
-    - name: Extract and verify binaries
-      run: |
-        cd rfone_host_binaries
-        
-        if [ -f "windows.zip" ]; then
-          echo "Extracting Windows binaries..."
-          unzip -q "windows.zip" -d windows/
-        fi
-        
-        if [ -f "ubuntu-22.zip" ]; then
-          echo "Extracting Ubuntu 22.04 binaries..."
-          unzip -q "ubuntu-22.zip" -d ubuntu-22/
-        elif [ -f "linux.zip" ]; then
-          echo "Using generic Linux binaries for Ubuntu 22.04..."
-          unzip -q "linux.zip" -d ubuntu-22/
-        fi
-        
-        if [ -f "ubuntu-24.zip" ]; then
-          echo "Extracting Ubuntu 24.04 binaries..."
-          unzip -q "ubuntu-24.zip" -d ubuntu-24/
-        elif [ -f "linux.zip" ] && [ ! -d "ubuntu-24" ]; then
-          echo "Using generic Linux binaries for Ubuntu 24.04..."
-          unzip -q "linux.zip" -d ubuntu-24/
-        fi
-        
-        if [ -d "windows" ]; then
-          WINDOWS_BINARY=$(find windows/ -name "*spiflash*" -type f | head -1)
-          if [ -z "$WINDOWS_BINARY" ]; then
-            echo "ERROR: No spiflash binary found in Windows package"
-            exit 1
-          fi
-          echo "Found Windows binary: $WINDOWS_BINARY"
-        fi
-        
-        if [ -d "ubuntu-22" ]; then
-          UBUNTU22_BINARY=$(find ubuntu-22/ -name "*spiflash*" -type f | head -1)
-          if [ -z "$UBUNTU22_BINARY" ]; then
-            echo "ERROR: No spiflash binary found in Ubuntu 22.04 package"
-            exit 1
-          fi
-          echo "Found Ubuntu 22.04 binary: $UBUNTU22_BINARY"
-        fi
-        
-        if [ -d "ubuntu-24" ]; then
-          UBUNTU24_BINARY=$(find ubuntu-24/ -name "*spiflash*" -type f | head -1)
-          if [ -z "$UBUNTU24_BINARY" ]; then
-            echo "ERROR: No spiflash binary found in Ubuntu 24.04 package"
-            exit 1
-          fi
-          echo "Found Ubuntu 24.04 binary: $UBUNTU24_BINARY"
-        fi
-        
-        echo "All available binaries:"
-        find . -name "*spiflash*" -type f
-        find . -name "*reset*" -type f
-    
-    - name: Create flash scripts
-      run: |
-        cat > flash_firmware_windows.bat << 'EOF'
-        @echo off
-        echo HydraSDR RFOne Firmware Flash Script - Windows
-        echo ================================================
-        echo.
-        echo Prerequisites:
-        echo - HydraSDR RFOne connected via USB
-        echo - Device should be in normal operation mode
-        echo.
-        pause
-        
-        echo Flashing firmware...
-        .\windows\hydrasdr_spiflash.exe -w .\hydrasdr_rfone_fw.bin
-        
-        if %ERRORLEVEL% EQU 0 (
-            echo.
-            echo Resetting device...
-            .\windows\hydrasdr_reset.exe
-            echo.
-            echo ================================================
-            echo Firmware flashed successfully and device reset!
-            echo ================================================
-        ) else (
-            echo.
-            echo ================================================
-            echo Firmware flashing failed!
-            echo Please check your device connection and try again.
-            echo ================================================
-        )
-        pause
-        EOF
-        
-        cat > flash_firmware_linux.sh << 'EOF'
-        #!/bin/bash
-        
-        echo "HydraSDR RFOne Firmware Flash Script - Linux"
-        echo "============================================="
-        echo
-        echo "Prerequisites:"
-        echo "- HydraSDR RFOne connected via USB"
-        echo "- Device should be in normal operation mode"
-        echo
-        
-        if [ -f /etc/os-release ]; then
-            . /etc/os-release
-            case "$VERSION_ID" in
-                "22.04") BINARY_DIR="ubuntu-22" ;;
-                "24.04") BINARY_DIR="ubuntu-24" ;;
-                *) echo "Warning: Unsupported Ubuntu version, using ubuntu-24"; BINARY_DIR="ubuntu-24" ;;
-            esac
+        if [ $EXTRACTED_PLATFORMS -gt 0 ]; then
+          echo "✓ Successfully extracted $EXTRACTED_PLATFORMS platform(s)"
+          echo "RFONE_HOST_AVAILABLE=true" >> $GITHUB_ENV
         else
-            echo "Warning: Cannot detect OS version, using ubuntu-24"
-            BINARY_DIR="ubuntu-24"
+          echo "❌ No host tools successfully extracted"
+          echo "RFONE_HOST_AVAILABLE=false" >> $GITHUB_ENV
         fi
-        
-        if [ -d "$BINARY_DIR" ]; then
-            SPIFLASH_BINARY=$(find "$BINARY_DIR" -name "*spiflash*" -type f | head -1)
-            RESET_BINARY=$(find "$BINARY_DIR" -name "*reset*" -type f | head -1)
-            if [ -z "$SPIFLASH_BINARY" ]; then
-                echo "ERROR: No spiflash binary found in $BINARY_DIR"
-                exit 1
-            fi
-        else
-            echo "ERROR: Directory $BINARY_DIR not found"
-            exit 1
-        fi
-        
-        echo "Using binary: $SPIFLASH_BINARY"
-        if [ -n "$RESET_BINARY" ]; then
-            echo "Using reset binary: $RESET_BINARY"
-        fi
-        read -p "Press Enter to continue or Ctrl+C to abort..."
-        
-        chmod +x "$SPIFLASH_BINARY"
-        if [ -n "$RESET_BINARY" ]; then
-            chmod +x "$RESET_BINARY"
-        fi
-        
-        echo "Flashing firmware..."
-        "$SPIFLASH_BINARY" -w ./hydrasdr_rfone_fw.bin
-        
-        if [ $? -eq 0 ]; then
-            echo
-            if [ -n "$RESET_BINARY" ]; then
-                echo "Resetting device..."
-                "$RESET_BINARY"
-                echo
-                echo "============================================="
-                echo "Firmware flashed successfully and device reset!"
-                echo "============================================="
-            else
-                echo "============================================="
-                echo "Firmware flashed successfully!"
-                echo "Please disconnect and reconnect your HydraSDR RFOne"
-                echo "============================================="
-            fi
-        else
-            echo
-            echo "============================================="
-            echo "Firmware flashing failed!"
-            echo "Troubleshooting:"
-            echo "- Check USB connection and permissions"
-            echo "- Try running with sudo"
-            echo "- Verify device is in normal operation mode"
-            echo "============================================="
-        fi
-        EOF
-        
-        chmod +x flash_firmware_linux.sh
     
-    - name: Package firmware
+    - name: Create package
       run: |
         PACKAGE_DIR="hydrasdr-rfone-firmware-${{ env.VERSION }}"
         mkdir -p "$PACKAGE_DIR"
         
-        cp fw_bin/hydrasdr_rfone_fw.bin "$PACKAGE_DIR/"
+        echo "Creating package: $PACKAGE_DIR"
         
-        cp -r fw_bin/dfuprog_hydrasdr "$PACKAGE_DIR/" 2>/dev/null || true
+        # Include firmware
+        if [ -f "fw_bin/hydrasdr_rfone_fw.bin" ]; then
+          cp fw_bin/hydrasdr_rfone_fw.bin "$PACKAGE_DIR/"
+          echo "✓ Firmware binary included"
+        else
+          echo "❌ ERROR: Firmware binary not found!"
+          exit 1
+        fi
         
-        cp -r rfone_host_binaries/windows "$PACKAGE_DIR/" 2>/dev/null || true
-        cp -r rfone_host_binaries/ubuntu-22 "$PACKAGE_DIR/" 2>/dev/null || true
-        cp -r rfone_host_binaries/ubuntu-24 "$PACKAGE_DIR/" 2>/dev/null || true
+        # Include DFU tools if available
+        if [ -d "fw_bin/dfuprog_hydrasdr" ]; then
+          cp -r fw_bin/dfuprog_hydrasdr "$PACKAGE_DIR/"
+          echo "✓ DFU tools included"
+        fi
         
-        cp flash_firmware_windows.bat "$PACKAGE_DIR/"
-        cp flash_firmware_linux.sh "$PACKAGE_DIR/"
+        # Include platform-specific host tools
+        INCLUDED_PLATFORMS=""
         
-        echo "Package contents:"
-        find "$PACKAGE_DIR/" -type f | sort
+        if [ -d "rfone_host_binaries/windows" ]; then
+          cp -r rfone_host_binaries/windows "$PACKAGE_DIR/"
+          echo "✓ Windows host tools included"
+          INCLUDED_PLATFORMS="$INCLUDED_PLATFORMS windows"
+        fi
+        
+        if [ -d "rfone_host_binaries/ubuntu-22" ]; then
+          cp -r rfone_host_binaries/ubuntu-22 "$PACKAGE_DIR/"
+          echo "✓ Ubuntu 22.04 host tools included"
+          INCLUDED_PLATFORMS="$INCLUDED_PLATFORMS ubuntu-22"
+        fi
+        
+        if [ -d "rfone_host_binaries/ubuntu-24" ]; then
+          cp -r rfone_host_binaries/ubuntu-24 "$PACKAGE_DIR/"
+          echo "✓ Ubuntu 24.04 host tools included"
+          INCLUDED_PLATFORMS="$INCLUDED_PLATFORMS ubuntu-24"
+        fi
+        
+        # Set environment variables for later steps
+        if [ -n "$INCLUDED_PLATFORMS" ]; then
+          echo "HOST_TOOLS_INCLUDED=true" >> $GITHUB_ENV
+          echo "INCLUDED_PLATFORMS=$INCLUDED_PLATFORMS" >> $GITHUB_ENV
+          echo "✓ Host tools included for:$INCLUDED_PLATFORMS"
+        else
+          echo "HOST_TOOLS_INCLUDED=false" >> $GITHUB_ENV
+          echo "INCLUDED_PLATFORMS=" >> $GITHUB_ENV
+          echo "⚠ No host tools included - firmware-only package"
+        fi
     
-    - name: Create package README
+    - name: Create flash scripts
       run: |
-        cat > "hydrasdr-rfone-firmware-${{ env.VERSION }}/README.md" << 'READMEEOF'
+        PACKAGE_DIR="hydrasdr-rfone-firmware-${{ env.VERSION }}"
+        
+        # Windows flash script
+        cat > "$PACKAGE_DIR/flash_firmware_windows.bat" << 'WINEOF'
+        @echo off
+        echo HydraSDR RFOne Firmware Flash Tool
+        echo ===================================
+        echo.
+        echo Prerequisites:
+        echo - HydraSDR RFOne connected via USB
+        echo - Device in normal operation mode (not DFU mode)
+        echo.
+        
+        if exist "windows\hydrasdr_spiflash.exe" (
+            echo Host tools found - ready to flash
+            echo.
+            pause
+            echo Flashing firmware...
+            windows\hydrasdr_spiflash.exe -w hydrasdr_rfone_fw.bin
+            if errorlevel 1 (
+                echo Flash failed!
+            ) else (
+                echo Flash successful!
+                if exist "windows\hydrasdr_reset.exe" (
+                    windows\hydrasdr_reset.exe
+                )
+            )
+        ) else (
+            echo Host tools not included in this package.
+            echo Please download from: https://github.com/hydrasdr/rfone_host
+            echo Then use: hydrasdr_spiflash.exe -w hydrasdr_rfone_fw.bin
+        )
+        pause
+        WINEOF
+
+        # Linux flash script
+        cat > "$PACKAGE_DIR/flash_firmware_linux.sh" << 'LINEOF'
+        #!/bin/bash
+        echo "HydraSDR RFOne Firmware Flash Tool"
+        echo "=================================="
+        echo
+        echo "Prerequisites:"
+        echo "- HydraSDR RFOne connected via USB"
+        echo "- Device in normal operation mode (not DFU mode)"
+        echo "- Appropriate USB permissions (may need sudo)"
+        echo
+
+        # Determine which Ubuntu version tools to use
+        BINARY_DIR=""
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            echo "Detected OS: $NAME $VERSION_ID"
+            case "$VERSION_ID" in
+                "22.04") 
+                    if [ -d "ubuntu-22" ]; then
+                        BINARY_DIR="ubuntu-22"
+                        echo "Using ubuntu-22 tools for Ubuntu 22.04"
+                    fi
+                    ;;
+                "24.04") 
+                    if [ -d "ubuntu-24" ]; then
+                        BINARY_DIR="ubuntu-24"
+                        echo "Using ubuntu-24 tools for Ubuntu 24.04"
+                    fi
+                    ;;
+            esac
+        fi
+
+        # Fallback to newest available tools
+        if [ -z "$BINARY_DIR" ]; then
+            if [ -d "ubuntu-24" ]; then
+                BINARY_DIR="ubuntu-24"
+                echo "Using ubuntu-24 tools as fallback"
+            elif [ -d "ubuntu-22" ]; then
+                BINARY_DIR="ubuntu-22"
+                echo "Using ubuntu-22 tools as fallback"
+            fi
+        fi
+
+        if [ -n "$BINARY_DIR" ] && [ -f "$BINARY_DIR/hydrasdr_spiflash" ]; then
+            echo "Host tools found in $BINARY_DIR - ready to flash"
+            echo
+            read -p "Press Enter to continue..."
+            echo "Flashing firmware..."
+            chmod +x "$BINARY_DIR/hydrasdr_spiflash"
+            ./"$BINARY_DIR/hydrasdr_spiflash" -w hydrasdr_rfone_fw.bin
+            if [ $? -eq 0 ]; then
+                echo "Flash successful!"
+                if [ -f "$BINARY_DIR/hydrasdr_reset" ]; then
+                    chmod +x "$BINARY_DIR/hydrasdr_reset"
+                    ./"$BINARY_DIR/hydrasdr_reset"
+                    echo "Device reset!"
+                fi
+            else
+                echo "Flash failed!"
+                echo "Try running with sudo if you get permission errors."
+            fi
+        else
+            echo "Host tools not included in this package."
+            echo "Available tools should be downloaded from:"
+            echo "https://github.com/hydrasdr/rfone_host/releases"
+            echo
+            echo "Manual flash command:"
+            echo "  ./hydrasdr_spiflash -w hydrasdr_rfone_fw.bin"
+        fi
+        LINEOF
+        
+        chmod +x "$PACKAGE_DIR/flash_firmware_linux.sh"
+    
+    - name: Create README
+      run: |
+        PACKAGE_DIR="hydrasdr-rfone-firmware-${{ env.VERSION }}"
+        
+        # Check what platforms are actually included and build manual section
+        MANUAL_SECTION=""
+        if [ -d "$PACKAGE_DIR/windows" ] || [ -d "$PACKAGE_DIR/ubuntu-22" ] || [ -d "$PACKAGE_DIR/ubuntu-24" ]; then
+          MANUAL_SECTION="## Manual Flashing
+
+        Host tools are included for:"
+          
+          if [ -d "$PACKAGE_DIR/windows" ]; then
+            MANUAL_SECTION="$MANUAL_SECTION
+        - Windows: \`windows\\\\hydrasdr_spiflash.exe -w hydrasdr_rfone_fw.bin\`"
+          fi
+          
+          if [ -d "$PACKAGE_DIR/ubuntu-22" ]; then
+            MANUAL_SECTION="$MANUAL_SECTION
+        - Ubuntu 22.04: \`./ubuntu-22/hydrasdr_spiflash -w hydrasdr_rfone_fw.bin\`"
+          fi
+          
+          if [ -d "$PACKAGE_DIR/ubuntu-24" ]; then
+            MANUAL_SECTION="$MANUAL_SECTION
+        - Ubuntu 24.04: \`./ubuntu-24/hydrasdr_spiflash -w hydrasdr_rfone_fw.bin\`"
+          fi
+        else
+          MANUAL_SECTION="## Manual Flashing
+
+        ⚠️ **Host tools not included in this package**
+
+        Download host tools from: https://github.com/hydrasdr/rfone_host/releases
+        Then use: \`./hydrasdr_spiflash -w hydrasdr_rfone_fw.bin\`"
+        fi
+        
+        cat > "$PACKAGE_DIR/README.md" << READMEEOF
         # HydraSDR RFOne Firmware ${{ env.VERSION }}
-        
-        ## Package Contents
-        
-        - hydrasdr_rfone_fw.bin - Main firmware binary
-        - flash_firmware_windows.bat - Windows flashing script
-        - flash_firmware_linux.sh - Linux flashing script
-        - windows/ - Windows host tools
-        - ubuntu-22/ - Ubuntu 22.04 host tools
-        - ubuntu-24/ - Ubuntu 24.04 host tools
-        - dfuprog_hydrasdr/ - DFU programming tools (Windows only)
-        
+
+        ## Quick Start
+
+        ### Windows
+        Double-click \`flash_firmware_windows.bat\`
+
+        ### Linux  
+        Run \`./flash_firmware_linux.sh\` (auto-detects Ubuntu version)
+
+        $MANUAL_SECTION
+
         ## Prerequisites
         - HydraSDR RFOne connected via USB
         - Device in normal operation mode (not DFU mode)
         - On Linux: appropriate USB permissions (may need sudo)
-        
-        ## Quick Start
-        
-        ### Windows
-        Double-click flash_firmware_windows.bat and follow instructions.
-        
-        ### Linux
-        Run ./flash_firmware_linux.sh and follow instructions.
-        
-        ## Manual Flashing
-        
-        ### Windows
-        .\windows\hydrasdr_spiflash.exe -w .\hydrasdr_rfone_fw.bin
-        .\windows\hydrasdr_reset.exe
-        
-        ### Linux Ubuntu 22.04
-        ./ubuntu-22/hydrasdr_spiflash -w ./hydrasdr_rfone_fw.bin
-        ./ubuntu-22/hydrasdr_reset
-        
-        ### Linux Ubuntu 24.04
-        ./ubuntu-24/hydrasdr_spiflash -w ./hydrasdr_rfone_fw.bin
-        ./ubuntu-24/hydrasdr_reset
-        
+
         ## Resources
         - Firmware: https://github.com/hydrasdr/rfone_fw
         - Host Tools: https://github.com/hydrasdr/rfone_host
+        - Host Tools Flash Documentation: https://github.com/hydrasdr/rfone_host/blob/main/hydrasdr-tools/hydrasdr_tools_readme.md#hydrasdr_spiflash
+        - Website: https://hydrasdr.com
         READMEEOF
+    
+    - name: Create archives
+      run: |
+        PACKAGE_DIR="hydrasdr-rfone-firmware-${{ env.VERSION }}"
+        
+        echo "Creating archives..."
+        
+        # Create complete archive with all platforms (without extra directory level)
+        cd "$PACKAGE_DIR"
+        zip -r "../hydrasdr-rfone-firmware-${{ env.VERSION }}-complete.zip" .
+        cd ..
+        echo "✓ Created complete archive"
+        
+        # Create platform-specific archives if host tools are included
+        if [ "${{ env.HOST_TOOLS_INCLUDED }}" = "true" ]; then
+          
+          # Windows-specific archive
+          if [[ "${{ env.INCLUDED_PLATFORMS }}" == *"windows"* ]]; then
+            mkdir -p "windows-release"
+            cp "$PACKAGE_DIR/hydrasdr_rfone_fw.bin" "windows-release/"
+            cp "$PACKAGE_DIR/flash_firmware_windows.bat" "windows-release/"
+            cp "$PACKAGE_DIR/README.md" "windows-release/"
+            cp -r "$PACKAGE_DIR/windows" "windows-release/"
+            if [ -d "$PACKAGE_DIR/dfuprog_hydrasdr" ]; then
+              cp -r "$PACKAGE_DIR/dfuprog_hydrasdr" "windows-release/"
+            fi
+            
+            cd "windows-release"
+            zip -r "../hydrasdr-rfone-firmware-${{ env.VERSION }}-windows.zip" .
+            cd ..
+            echo "✓ Created Windows archive"
+          fi
+          
+          # Ubuntu 22.04 archive
+          if [[ "${{ env.INCLUDED_PLATFORMS }}" == *"ubuntu-22"* ]]; then
+            mkdir -p "ubuntu-22-release"
+            cp "$PACKAGE_DIR/hydrasdr_rfone_fw.bin" "ubuntu-22-release/"
+            cp "$PACKAGE_DIR/flash_firmware_linux.sh" "ubuntu-22-release/"
+            cp "$PACKAGE_DIR/README.md" "ubuntu-22-release/"
+            cp -r "$PACKAGE_DIR/ubuntu-22" "ubuntu-22-release/"
+            
+            tar -czf "hydrasdr-rfone-firmware-${{ env.VERSION }}-ubuntu-22.04.tar.gz" -C "ubuntu-22-release" .
+            echo "✓ Created Ubuntu 22.04 archive"
+          fi
+          
+          # Ubuntu 24.04 archive
+          if [[ "${{ env.INCLUDED_PLATFORMS }}" == *"ubuntu-24"* ]]; then
+            mkdir -p "ubuntu-24-release"
+            cp "$PACKAGE_DIR/hydrasdr_rfone_fw.bin" "ubuntu-24-release/"
+            cp "$PACKAGE_DIR/flash_firmware_linux.sh" "ubuntu-24-release/"
+            cp "$PACKAGE_DIR/README.md" "ubuntu-24-release/"
+            cp -r "$PACKAGE_DIR/ubuntu-24" "ubuntu-24-release/"
+            
+            tar -czf "hydrasdr-rfone-firmware-${{ env.VERSION }}-ubuntu-24.04.tar.gz" -C "ubuntu-24-release" .
+            echo "✓ Created Ubuntu 24.04 archive"
+          fi
+        fi
+        
+        # Show created archives
+        echo "Created archives:"
+        ls -la *.zip *.tar.gz 2>/dev/null || echo "No additional archives created"
     
     - name: Upload firmware artifacts
       uses: actions/upload-artifact@v4
       with:
         name: hydrasdr-rfone-firmware-${{ env.VERSION }}
-        path: hydrasdr-rfone-firmware-${{ env.VERSION }}/*
+        path: |
+          hydrasdr-rfone-firmware-${{ env.VERSION }}/*
+          *.zip
+          *.tar.gz
         retention-days: 30
+
+  update_nightly_release:
+    runs-on: ubuntu-24.04
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Download all build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: hydrasdr-rfone-firmware-*
+        merge-multiple: true
+        path: ./artifacts
+    
+    - name: Extract firmware version
+      run: |
+        VERSION_FILE=$(find ./artifacts -name "*.zip" | head -1)
+        if [ -n "$VERSION_FILE" ]; then
+          FULL_VERSION=$(basename "$VERSION_FILE" .zip | sed 's/hydrasdr-rfone-firmware-//')
+          BASE_VERSION=$(echo "$FULL_VERSION" | sed 's/-complete$//' | sed 's/-windows$//' | sed 's/-ubuntu-[0-9][0-9]\.[0-9][0-9]$//')
+          echo "VERSION=$BASE_VERSION" >> $GITHUB_ENV
+          echo "Detected version: $BASE_VERSION"
+        else
+          echo "VERSION=unknown" >> $GITHUB_ENV
+        fi
+    
+    - name: Generate release notes
+      run: |
+        TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+        COMMIT_SHORT=$(git rev-parse --short HEAD)
+        COMMIT_MSG=$(git log -1 --pretty=format:'%s')
+        
+        cat > release_notes.md << 'NOTEEOF'
+        # HydraSDR RFOne Nightly Firmware
+        NOTEEOF
+        
+        echo "" >> release_notes.md
+        echo "**Version:** ${{ env.VERSION }}" >> release_notes.md
+        echo "**Built:** $TIMESTAMP" >> release_notes.md
+        echo "**Commit:** [\`$COMMIT_SHORT\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" >> release_notes.md
+        echo "**Message:** $COMMIT_MSG" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "## ⚠️ Development Build" >> release_notes.md
+        echo "This is an automated nightly build. Use at your own risk!" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "## Available Downloads" >> release_notes.md
+        
+        # List available archives
+        COMPLETE_ARCHIVE=$(find ./artifacts -name "*-complete.zip" | head -1)
+        if [ -n "$COMPLETE_ARCHIVE" ]; then
+          COMPLETE_NAME=$(basename "$COMPLETE_ARCHIVE")
+          if find ./artifacts -name "*-windows.zip" | head -1 > /dev/null || \
+             find ./artifacts -name "*-ubuntu-*.tar.gz" | head -1 > /dev/null; then
+            echo "- **$COMPLETE_NAME** - All platforms included" >> release_notes.md
+          else
+            echo "- **$COMPLETE_NAME** - Firmware only (no host tools available)" >> release_notes.md
+          fi
+        fi
+        
+        WINDOWS_ARCHIVE=$(find ./artifacts -name "*-windows.zip" | head -1)
+        if [ -n "$WINDOWS_ARCHIVE" ]; then
+          echo "- **$(basename "$WINDOWS_ARCHIVE")** - Windows tools only" >> release_notes.md
+        fi
+        
+        UBUNTU22_ARCHIVE=$(find ./artifacts -name "*-ubuntu-22.04.tar.gz" | head -1)
+        if [ -n "$UBUNTU22_ARCHIVE" ]; then
+          echo "- **$(basename "$UBUNTU22_ARCHIVE")** - Ubuntu 22.04 LTS tools" >> release_notes.md
+        fi
+        
+        UBUNTU24_ARCHIVE=$(find ./artifacts -name "*-ubuntu-24.04.tar.gz" | head -1)
+        if [ -n "$UBUNTU24_ARCHIVE" ]; then
+          echo "- **$(basename "$UBUNTU24_ARCHIVE")** - Ubuntu 24.04 LTS tools" >> release_notes.md
+        fi
+        
+        cat >> release_notes.md << 'NOTEEOF2'
+
+        ## Quick Flash
+        1. Download the appropriate package for your platform
+        2. Extract it  
+        3. Run the flash script:
+           - **Windows**: Double-click `flash_firmware_windows.bat`
+           - **Linux**: Run `./flash_firmware_linux.sh`
+
+        ## Resources
+        - [Firmware Repository](https://github.com/hydrasdr/rfone_fw)
+        - [Host Tools](https://github.com/hydrasdr/rfone_host)
+        - [Host Tools Flash Documentation](https://github.com/hydrasdr/rfone_host/blob/main/hydrasdr-tools/hydrasdr_tools_readme.md#hydrasdr_spiflash)
+        - [Website](https://hydrasdr.com)
+        NOTEEOF2
+    
+    - name: Delete and create nightly release
+      run: |
+        gh release delete nightly -R ${{ github.repository }} --yes || echo "No existing nightly release"
+        
+        TIMESTAMP=$(date -u '+%Y%m%d-%H%M%S')
+        gh release create nightly \
+          -R ${{ github.repository }} \
+          --title "Nightly Build ($TIMESTAMP)" \
+          --notes-file release_notes.md \
+          --prerelease
+    
+    - name: Upload archives to release
+      run: |
+        echo "Uploading archives to nightly release..."
+        
+        find ./artifacts -name "*.zip" -exec gh release upload nightly {} -R ${{ github.repository }} \;
+        find ./artifacts -name "*.tar.gz" -exec gh release upload nightly {} -R ${{ github.repository }} \;
+        
+        echo "Upload complete!"
