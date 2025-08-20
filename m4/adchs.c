@@ -88,16 +88,30 @@ void ADCHS_DMA_init(uint32_t dest_addr, uint8_t packed)
     /* Modulo with round rubin last LLI point to First in infinite loop */
     adchs_dma_lli[i].next_lli = (uint32_t)(&adchs_dma_lli[(i+1)%ADCHS_DMA_NUM_LLI]);
 
-    adchs_dma_lli[i].control = ( (nb_dma_transfer) << 0) |
-                               (0x2 << 12)  |
-                               (0x2 << 15)  |
-                               (0x2 << 18)  |
-                               (0x2 << 21)  |
-                               (0x1 << 24)  |
-                               (0x1 << 25)  |
-                               (0x0 << 26)  |
-                               (0x1 << 27)  |
-                               (0x0UL << 31);
+    if (packed==HYDRASDR_PACKING_TIMESTAMP_ON) {
+      adchs_dma_lli[i].dst_addr+=4; // have to skip the packet header
+      adchs_dma_lli[i].control = ( (nb_dma_transfer-1) << 0) |
+                                 (0x2 << 12)  |
+                                 (0x1 << 15)  | // 4x burst because of offset
+                                 (0x2 << 18)  |
+                                 (0x2 << 21)  |
+                                 (0x1 << 24)  |
+                                 (0x1 << 25)  |
+                                 (0x0 << 26)  |
+                                 (0x1 << 27)  |
+                                 (0x0UL << 31);
+   } else {
+     adchs_dma_lli[i].control = ( (nb_dma_transfer) << 0) |
+                                (0x2 << 12)  |
+                                (0x2 << 15)  |
+                                (0x2 << 18)  |
+                                (0x2 << 21)  |
+                                (0x1 << 24)  |
+                                (0x1 << 25)  |
+                                (0x0 << 26)  |
+                                (0x1 << 27)  |
+                                (0x0UL << 31);
+   }
   }
 
   if(packed)
