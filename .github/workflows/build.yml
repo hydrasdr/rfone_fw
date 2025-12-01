@@ -122,10 +122,11 @@ jobs:
         echo "✓ Found rfone_host release: $HOST_VERSION"
         echo "RFONE_HOST_VERSION=$HOST_VERSION" >> $GITHUB_ENV
         
-        echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | endswith(".zip")) | .name' > available_assets.txt
+        # Filter for both .zip and .tar.gz assets
+        echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | test("\\.(zip|tar\\.gz)$")) | .name' > available_assets.txt
         
         if [ ! -s available_assets.txt ]; then
-          echo "❌ No .zip assets found in release"
+          echo "❌ No assets found in release"
           echo "RFONE_HOST_AVAILABLE=false" >> $GITHUB_ENV
           exit 0
         fi
@@ -152,6 +153,18 @@ jobs:
               DOWNLOADED_ASSETS=$((DOWNLOADED_ASSETS + 1))
             fi
             
+          elif [[ "$asset" =~ [Mm]acOS.*x86_64 ]]; then
+             if curl -f -L -o "macos-x64.tar.gz" "$download_url"; then
+              echo "✓ macOS x64 tools downloaded"
+              DOWNLOADED_ASSETS=$((DOWNLOADED_ASSETS + 1))
+            fi
+
+          elif [[ "$asset" =~ [Mm]acOS.*ARM64 ]]; then
+             if curl -f -L -o "macos-arm64.tar.gz" "$download_url"; then
+              echo "✓ macOS ARM64 tools downloaded"
+              DOWNLOADED_ASSETS=$((DOWNLOADED_ASSETS + 1))
+            fi
+
           elif [[ "$asset" =~ [Uu]buntu.*22 ]] || [[ "$asset" =~ 22\.04 ]]; then
             if curl -f -L -o "ubuntu-22.zip" "$download_url"; then
               echo "✓ Ubuntu 22.04 tools downloaded"
@@ -175,6 +188,7 @@ jobs:
         echo "Extracting downloaded tools..."
         EXTRACTED_PLATFORMS=0
         
+        # Extract Zips
         for zipfile in *.zip; do
           if [ -f "$zipfile" ]; then
             dirname="${zipfile%.zip}"
@@ -183,6 +197,23 @@ jobs:
                 echo "✓ Extracted $dirname with spiflash binary"
                 EXTRACTED_PLATFORMS=$((EXTRACTED_PLATFORMS + 1))
               fi
+            fi
+          fi
+        done
+
+        # Extract Tarballs (macOS tools are typically .tar.gz)
+        for tarfile in *.tar.gz; do
+          if [ -f "$tarfile" ]; then
+            dirname="${tarfile%.tar.gz}"
+            mkdir -p "$dirname"
+            if tar -xzf "$tarfile" -C "$dirname"; then
+               # Flatten structure if nested
+               find "$dirname" -name "hydrasdr_spiflash" -type f -exec cp {} "$dirname/" \;
+               
+               if [ -f "$dirname/hydrasdr_spiflash" ]; then
+                 echo "✓ Extracted $dirname with spiflash binary"
+                 EXTRACTED_PLATFORMS=$((EXTRACTED_PLATFORMS + 1))
+               fi
             fi
           fi
         done
@@ -237,6 +268,18 @@ jobs:
           cp -r rfone_host_binaries/windows "$PACKAGE_DIR/"
           echo "✓ Windows host tools included"
           INCLUDED_PLATFORMS="$INCLUDED_PLATFORMS windows"
+        fi
+        
+        if [ -d "rfone_host_binaries/macos-x64" ]; then
+          cp -r rfone_host_binaries/macos-x64 "$PACKAGE_DIR/"
+          echo "✓ macOS x64 host tools included"
+          INCLUDED_PLATFORMS="$INCLUDED_PLATFORMS macos-x64"
+        fi
+
+        if [ -d "rfone_host_binaries/macos-arm64" ]; then
+          cp -r rfone_host_binaries/macos-arm64 "$PACKAGE_DIR/"
+          echo "✓ macOS ARM64 host tools included"
+          INCLUDED_PLATFORMS="$INCLUDED_PLATFORMS macos-arm64"
         fi
         
         if [ -d "rfone_host_binaries/ubuntu-22" ]; then
@@ -298,6 +341,57 @@ jobs:
         )
         pause
         WINEOF
+
+        # macOS flash script
+        cat > "$PACKAGE_DIR/flash_firmware_macos.sh" << 'MACOSEOF'
+        #!/bin/bash
+        echo "HydraSDR RFOne Firmware Flash Tool (macOS)"
+        echo "=========================================="
+        
+        ARCH=$(uname -m)
+        TOOL=""
+
+        if [ "$ARCH" == "arm64" ]; then
+            if [ -d "macos-arm64" ]; then
+                TOOL="macos-arm64/hydrasdr_spiflash"
+                echo "Detected Apple Silicon (ARM64). Using: $TOOL"
+            fi
+        else
+            if [ -d "macos-x64" ]; then
+                TOOL="macos-x64/hydrasdr_spiflash"
+                echo "Detected Intel Mac (x86_64). Using: $TOOL"
+            fi
+        fi
+
+        if [ -z "$TOOL" ]; then
+             echo "Could not find tools for $ARCH inside the package."
+             echo "Please check the 'macos-x64' or 'macos-arm64' folders."
+             exit 1
+        fi
+
+        # Fix Gatekeeper quarantine attribute
+        echo "Removing Gatekeeper quarantine flag (if any)..."
+        xattr -d com.apple.quarantine "$TOOL" 2>/dev/null
+
+        chmod +x "$TOOL"
+        echo "Flashing firmware..."
+        ./"$TOOL" -w hydrasdr_rfone_fw.bin
+
+        if [ $? -eq 0 ]; then
+             echo "Flash successful!"
+             # Try reset if available
+             RESET_TOOL="${TOOL/_spiflash/_reset}"
+             if [ -f "$RESET_TOOL" ]; then
+                 xattr -d com.apple.quarantine "$RESET_TOOL" 2>/dev/null
+                 chmod +x "$RESET_TOOL"
+                 ./"$RESET_TOOL"
+                 echo "Device reset."
+             fi
+        else
+             echo "Flash failed."
+        fi
+        MACOSEOF
+        chmod +x "$PACKAGE_DIR/flash_firmware_macos.sh"
 
         # Linux flash script
         cat > "$PACKAGE_DIR/flash_firmware_linux.sh" << 'LINEOF'
@@ -379,7 +473,7 @@ jobs:
         
         # Check what platforms are actually included and build manual section
         MANUAL_SECTION=""
-        if [ -d "$PACKAGE_DIR/windows" ] || [ -d "$PACKAGE_DIR/ubuntu-22" ] || [ -d "$PACKAGE_DIR/ubuntu-24" ]; then
+        if [ -d "$PACKAGE_DIR/windows" ] || [ -d "$PACKAGE_DIR/ubuntu-22" ] || [ -d "$PACKAGE_DIR/macos-x64" ]; then
           MANUAL_SECTION="## Manual Flashing
 
         Host tools are included for:"
@@ -387,6 +481,16 @@ jobs:
           if [ -d "$PACKAGE_DIR/windows" ]; then
             MANUAL_SECTION="$MANUAL_SECTION
         - Windows: \`windows\\\\hydrasdr_spiflash.exe -w hydrasdr_rfone_fw.bin\`"
+          fi
+
+          if [ -d "$PACKAGE_DIR/macos-x64" ]; then
+             MANUAL_SECTION="$MANUAL_SECTION
+        - macOS (Intel): \`./macos-x64/hydrasdr_spiflash -w hydrasdr_rfone_fw.bin\`"
+          fi
+          
+          if [ -d "$PACKAGE_DIR/macos-arm64" ]; then
+             MANUAL_SECTION="$MANUAL_SECTION
+        - macOS (Apple Silicon): \`./macos-arm64/hydrasdr_spiflash -w hydrasdr_rfone_fw.bin\`"
           fi
           
           if [ -d "$PACKAGE_DIR/ubuntu-22" ]; then
@@ -414,6 +518,9 @@ jobs:
 
         ### Windows
         Double-click \`flash_firmware_windows.bat\`
+
+        ### macOS
+        Run \`./flash_firmware_macos.sh\` (auto-detects Architecture and fixes Gatekeeper)
 
         ### Linux  
         Run \`./flash_firmware_linux.sh\` (auto-detects Ubuntu version)
@@ -464,6 +571,30 @@ jobs:
             echo "✓ Created Windows archive"
           fi
           
+          # macOS x64 archive
+          if [[ "${{ env.INCLUDED_PLATFORMS }}" == *"macos-x64"* ]]; then
+            mkdir -p "macos-x64-release"
+            cp "$PACKAGE_DIR/hydrasdr_rfone_fw.bin" "macos-x64-release/"
+            cp "$PACKAGE_DIR/flash_firmware_macos.sh" "macos-x64-release/"
+            cp "$PACKAGE_DIR/README.md" "macos-x64-release/"
+            cp -r "$PACKAGE_DIR/macos-x64" "macos-x64-release/"
+            
+            tar -czf "hydrasdr-rfone-firmware-${{ env.VERSION }}-macos-x64.tar.gz" -C "macos-x64-release" .
+            echo "✓ Created macOS x64 archive"
+          fi
+
+          # macOS ARM64 archive
+          if [[ "${{ env.INCLUDED_PLATFORMS }}" == *"macos-arm64"* ]]; then
+            mkdir -p "macos-arm64-release"
+            cp "$PACKAGE_DIR/hydrasdr_rfone_fw.bin" "macos-arm64-release/"
+            cp "$PACKAGE_DIR/flash_firmware_macos.sh" "macos-arm64-release/"
+            cp "$PACKAGE_DIR/README.md" "macos-arm64-release/"
+            cp -r "$PACKAGE_DIR/macos-arm64" "macos-arm64-release/"
+            
+            tar -czf "hydrasdr-rfone-firmware-${{ env.VERSION }}-macos-arm64.tar.gz" -C "macos-arm64-release" .
+            echo "✓ Created macOS ARM64 archive"
+          fi
+
           # Ubuntu 22.04 archive
           if [[ "${{ env.INCLUDED_PLATFORMS }}" == *"ubuntu-22"* ]]; then
             mkdir -p "ubuntu-22-release"
@@ -530,7 +661,8 @@ jobs:
         VERSION_FILE=$(find ./artifacts -name "*.zip" | head -1)
         if [ -n "$VERSION_FILE" ]; then
           FULL_VERSION=$(basename "$VERSION_FILE" .zip | sed 's/hydrasdr-rfone-firmware-//')
-          BASE_VERSION=$(echo "$FULL_VERSION" | sed 's/-complete$//' | sed 's/-windows$//' | sed 's/-ubuntu-[0-9][0-9]\.[0-9][0-9]$//')
+          # Clean version string to remove platform suffixes if needed
+          BASE_VERSION=$(echo "$FULL_VERSION" | sed 's/-complete$//' | sed 's/-windows$//' | sed 's/-ubuntu.*$//' | sed 's/-macos.*$//')
           echo "VERSION=$BASE_VERSION" >> $GITHUB_ENV
           echo "Detected version: $BASE_VERSION"
         else
@@ -562,17 +694,22 @@ jobs:
         COMPLETE_ARCHIVE=$(find ./artifacts -name "*-complete.zip" | head -1)
         if [ -n "$COMPLETE_ARCHIVE" ]; then
           COMPLETE_NAME=$(basename "$COMPLETE_ARCHIVE")
-          if find ./artifacts -name "*-windows.zip" | head -1 > /dev/null || \
-             find ./artifacts -name "*-ubuntu-*.tar.gz" | head -1 > /dev/null; then
-            echo "- **$COMPLETE_NAME** - All platforms included" >> release_notes.md
-          else
-            echo "- **$COMPLETE_NAME** - Firmware only (no host tools available)" >> release_notes.md
-          fi
+          echo "- **$COMPLETE_NAME** - All platforms included (Windows, macOS, Linux)" >> release_notes.md
         fi
         
         WINDOWS_ARCHIVE=$(find ./artifacts -name "*-windows.zip" | head -1)
         if [ -n "$WINDOWS_ARCHIVE" ]; then
           echo "- **$(basename "$WINDOWS_ARCHIVE")** - Windows tools only" >> release_notes.md
+        fi
+
+        MACOSX64_ARCHIVE=$(find ./artifacts -name "*-macos-x64.tar.gz" | head -1)
+        if [ -n "$MACOSX64_ARCHIVE" ]; then
+          echo "- **$(basename "$MACOSX64_ARCHIVE")** - macOS Intel tools only" >> release_notes.md
+        fi
+
+        MACOSARM_ARCHIVE=$(find ./artifacts -name "*-macos-arm64.tar.gz" | head -1)
+        if [ -n "$MACOSARM_ARCHIVE" ]; then
+          echo "- **$(basename "$MACOSARM_ARCHIVE")** - macOS Apple Silicon tools only" >> release_notes.md
         fi
         
         UBUNTU22_ARCHIVE=$(find ./artifacts -name "*-ubuntu-22.04.tar.gz" | head -1)
@@ -592,6 +729,7 @@ jobs:
         2. Extract it  
         3. Run the flash script:
            - **Windows**: Double-click `flash_firmware_windows.bat`
+           - **macOS**: Run `./flash_firmware_macos.sh`
            - **Linux**: Run `./flash_firmware_linux.sh`
 
         ## Resources
