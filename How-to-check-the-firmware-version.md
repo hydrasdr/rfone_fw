@@ -2,7 +2,7 @@
 Make sure that your HydraSDR RFOne is connected to a working USB port.
 
 ### Windows
-1 Download the latest HydraSDR RFOne Host Tools https://github.com/hydrasdr/rfone_host/releases/
+1 Download the latest HydraSDR RFOne Host Tools https://github.com/hydrasdr/hydrasdr-host/releases/
 
 2 Right click on the archive and select "Extract all".
 
@@ -14,7 +14,7 @@ Make sure that your HydraSDR RFOne is connected to a working USB port.
 
 
 ### Linux
-1 Install the latest HydraSDR RFOne Host Tools from https://github.com/hydrasdr/rfone_host
+1 Install the latest HydraSDR RFOne Host Tools from https://github.com/hydrasdr/hydrasdr-host
 
 2 Run "hydrasdr_info".
 

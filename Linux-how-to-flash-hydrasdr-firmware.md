@@ -2,7 +2,7 @@
 
 #### Prerequisites to build & install host tools in order to use host tools & flash firmware:
 
-* See https://github.com/hydrasdr/rfone_host/blob/master/README.md
+* See https://github.com/hydrasdr/hydrasdr-host/blob/main/README.md
 
 ### Flash HydraSDR RFOne firmware
 
