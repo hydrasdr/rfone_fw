@@ -162,6 +162,8 @@ typedef struct
 /* Multi Core order (conf/command...) */
 #define SET_SAMPLERATE_CMD  (1)
 #define SET_PACKING_CMD (1)
+#define SET_FRAMING_CMD (1)
+#define SET_SOF_CMD (1)
 #define START_ADCHS_CMD  (1)
 #define STOP_ADCHS_CMD   (2)
 typedef struct
@@ -182,7 +184,8 @@ typedef enum
 {
   HYDRASDR_PACKING_OFF = 0, /* No Packing */
   HYDRASDR_PACKING_ON = 1, /* Packing(16bits=>12bits) Only */
-  HYDRASDR_PACKING_TIMESTAMP_ON = 2 /* Packing(16bits=>12bits) + Timestamp+LPC_ADCHS->STATUS0 on each frame */
+  HYDRASDR_PACKING_TIMESTAMP_ON = 2, /* Packing(16bits=>12bits) + Timestamp+LPC_ADCHS->STATUS0 on each frame */
+  HYDRASDR_PACKING_8BIT = 3 /* One byte per sample, the top 8 bits */
   /* Max Value shall not exceed 255/8bits as used by ADCHS_DMA_init() & set_packing_state() */
 } hydrasdr_packing_type;
 
@@ -190,6 +193,7 @@ void delay(uint32_t duration);
 
 void cpu_reset(void);
 
+uint32_t sys_calib_r82x(uint32_t xtal_freq, int32_t correction_ppb);
 void sys_clock_init();
 
 void sys_clock_samplerate(const core_clock_pll0_idivb_t* const pt_core_clocks_conf);

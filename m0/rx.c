@@ -30,6 +30,7 @@
 #include "usb_req.h"
 #include "hydrasdr_commands.h"
 #include "r82x.h"
+#include "watchdog.h"
 
 extern usb_endpoint_t usb_endpoint_bulk_in;
 
@@ -43,6 +44,7 @@ void set_receiver_mode(const receiver_mode_t new_receiver_mode)
   {
     usb_endpoint_init(&usb_endpoint_bulk_in);
     ADCHS_start(sample_rate_conf_no);
+    watchdog_host_contact();
   }else
   {
     ADCHS_stop(sample_rate_conf_no);

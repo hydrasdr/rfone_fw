@@ -30,6 +30,8 @@
 #include <libopencm3/lpc43xx/rgu.h>
 #include <libopencm3/lpc43xx/ipc.h>
 #include <libopencm3/cm3/scs.h>
+#include <libopencm3/cm3/scb.h>
+#include <libopencm3/cm3/vector.h>
 
 #include <core.h>
 #include <si5351c.h>
@@ -38,37 +40,24 @@
 #include <signal_mcu.h>
 
 #include "adchs.h"
+#include "hydrasdr_debug.h"
+#include "timing.h"
 
 #include "m0_bin.h"
 #include "m0s_bin.h"
 
 #include "hydrasdr_conf.h"
+#include <hydrasdr_stream.h>
+#include <watchdog.h>
 
 #define DEFAULT_ADCHS_CHAN (0)
 
 #undef DMA_ISR_DEBUG
 //#define DMA_ISR_DEBUG
 
-#define DATA_PACKED_BUFFER_LEN ((ADCHS_DATA_TRANSFER_SIZE_BYTE/2)/16*12)
-
-#define USB_DATA_TRANSFER_SIZE_BYTE (ADCHS_DATA_TRANSFER_SIZE_BYTE)
-#define USB_BULK_BUFFER_MASK ((32768) - 1)
-#define get_usb_buffer_offset() (usb_bulk_buffer_offset[0])
-#define set_usb_buffer_offset(val) (usb_bulk_buffer_offset[0] = val)
-/* Manage round robin after increment with USB_BULK_BUFFER_MASK */
-#define inc_mask_usb_buffer_offset(buff_offset, inc_value) ((buff_offset+inc_value) & USB_BULK_BUFFER_MASK)
-
-volatile uint32_t usb_bulk_buffer_offset_uint32_m4;
-volatile uint32_t *usb_bulk_buffer_offset_m4;
-volatile uint32_t last_offset_m4;
-#define get_usb_buffer_offset_m4() (usb_bulk_buffer_offset_m4[0])
-#define set_usb_buffer_offset_m4(val) (usb_bulk_buffer_offset_m4[0] = val)
-#define inc_mask_usb_buffer_offset_m4(buff_offset, inc_value) inc_mask_usb_buffer_offset(buff_offset, inc_value)
-
 #define SLAVE_TXEV_FLAG ((uint32_t *) 0x40043400)
 #define SLAVE_TXEV_QUIT() { *SLAVE_TXEV_FLAG = 0x0; }
 
-extern uint32_t cm4_data_share; /* defined in linker script */
 extern uint32_t adchs_data; /* defined in linker script */
 extern uint32_t cm0_data_share; /* defined in linker script */
 
@@ -76,20 +65,23 @@ volatile int adchs_stopped = 0;
 volatile int adchs_started = 0;
 
 volatile hydrasdr_packing_type use_packing = HYDRASDR_PACKING_OFF;
+volatile int use_framing = 0;
 
-volatile uint32_t *usb_bulk_buffer_offset = &cm4_data_share;
-volatile uint32_t *usb_bulk_buffer_length = ((&cm4_data_share)+1);
-volatile uint32_t *last_offset_m0 = ((&cm4_data_share)+2);
+volatile hydrasdr_stream_state_t * const stream = HYDRASDR_STREAM_STATE;
 
-uint8_t* const usb_bulk_buffer = (uint8_t*)USB_BULK_BUFFER_START;
+volatile uint32_t dma_chunks_done = 0;
+static uint32_t packed_chunks = 0;
+static volatile uint32_t adchs_epoch = 0;
+
 
 volatile mcore_t *start_adchs = (mcore_t *)(&cm0_data_share);
 volatile mcore_t *set_samplerate = (mcore_t *)((&cm0_data_share)+1);
 volatile mcore_t *set_packing = (mcore_t *)((&cm0_data_share)+2);
+volatile mcore_t *set_framing = (mcore_t *)((&cm0_data_share)+3);
+volatile mcore_t *set_sof = (mcore_t *)((&cm0_data_share)+4);
+volatile uint32_t *set_sof_divider = (uint32_t *)((&cm0_data_share)+5);
 
 volatile int first_start = 0;
-
-volatile int framecounter = 0;
 
 /*
 uint32_t nb_cycles[5] = { 0 };
@@ -170,20 +162,60 @@ __attribute__ ((always_inline)) static void pack(uint32_t* input, uint32_t* outp
         
 }
 
-static __inline__ void clr_usb_buffer_offset(void)
-{  
-  if(use_packing == HYDRASDR_PACKING_OFF)
-  {
-    usb_bulk_buffer_offset[0] = ADCHS_DATA_TRANSFER_SIZE_BYTE;
-  }
-  else /* Other cases Packing is ON */
-  {
-    usb_bulk_buffer_offset[0] = ADCHS_DATA_TRANSFER_SIZE_BYTE / 2;
-    usb_bulk_buffer_offset_m4[0] = ADCHS_DATA_TRANSFER_SIZE_BYTE;
-  }
-  
-  last_offset_m4 = 0;
-  *last_offset_m0 = 0;
+__attribute__ ((always_inline)) static void pack8(uint32_t* input, uint32_t* output, uint32_t length)
+{
+  register uint32_t *a0 asm("r0") = input;
+  register uint32_t *a1 asm("r1") = output;
+  register uint32_t a2 asm("r2") = length;
+
+  asm volatile("1:\n\t"
+         "ldm.w %0!, {r4, r5, r6, r7, r8, r9, r10, r12}\n\t"
+         "lsr r4, r4, #4\n\t"
+         "lsr r5, r5, #4\n\t"
+         "lsr r6, r6, #4\n\t"
+         "lsr r7, r7, #4\n\t"
+         "lsr r8, r8, #4\n\t"
+         "lsr r9, r9, #4\n\t"
+         "lsr r10, r10, #4\n\t"
+         "lsr r12, r12, #4\n\t"
+         "uxtb16 r4, r4\n\t"
+         "uxtb16 r5, r5\n\t"
+         "uxtb16 r6, r6\n\t"
+         "uxtb16 r7, r7\n\t"
+         "uxtb16 r8, r8\n\t"
+         "uxtb16 r9, r9\n\t"
+         "uxtb16 r10, r10\n\t"
+         "uxtb16 r12, r12\n\t"
+         "orr r4, r4, r4, lsr #8\n\t"
+         "orr r5, r5, r5, lsr #8\n\t"
+         "orr r6, r6, r6, lsr #8\n\t"
+         "orr r7, r7, r7, lsr #8\n\t"
+         "orr r8, r8, r8, lsr #8\n\t"
+         "orr r9, r9, r9, lsr #8\n\t"
+         "orr r10, r10, r10, lsr #8\n\t"
+         "orr r12, r12, r12, lsr #8\n\t"
+         "pkhbt r4, r4, r5, lsl #16\n\t"
+         "pkhbt r5, r6, r7, lsl #16\n\t"
+         "pkhbt r6, r8, r9, lsl #16\n\t"
+         "pkhbt r7, r10, r12, lsl #16\n\t"
+         "stm.w %1!, {r4, r5, r6, r7}\n\t"
+         "subs %2, %2, #16\n\t"
+         "bne 1b\n\t"
+        : "+r"(a0), "+r"(a1), "+r"(a2)
+        :: "memory", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r12");
+}
+
+static __inline__ void stream_reset(void)
+{
+  dma_chunks_done = 0;
+  packed_chunks = 0;
+  stream->captured = 0;
+  stream->overruns = 0;
+  stream->backlog_max = 0;
+  stream->m0_lag_max = 0;
+  stream->dma_errors = 0;
+  stream->adc_overflows = 0;
+  adchs_epoch++;
 }
 
 static __inline__ uint32_t get_start_stop_adchs(void)
@@ -220,25 +252,77 @@ static __inline__ void ack_packing(void)
   set_packing->raw = 0;
 }
 
+static __inline__ uint8_t get_framing(uint8_t *framing_state)
+{
+  *framing_state = set_framing->conf;
+  return(set_framing->cmd);
+}
+
+static __inline__ void ack_framing(void)
+{
+  set_framing->raw = 0;
+}
+
+static __inline__ uint8_t get_sof(void)
+{
+  return(set_sof->cmd);
+}
+
+static __inline__ void ack_sof(void)
+{
+  set_sof->raw = 0;
+}
+
+static void publish_stream_format(void)
+{
+  uint32_t header = use_framing ? HYDRASDR_FRAME_HEADER_SIZE : 0;
+
+  stream->header_bytes = header;
+  stream->packing = use_packing;
+  if(use_packing == HYDRASDR_PACKING_OFF)
+  {
+    stream->chunk_bytes = HYDRASDR_STREAM_CHUNK_BYTES_UNPACKED;
+    stream->chunk_slots = 2;
+    stream->ring_chunks = HYDRASDR_STREAM_NUM_SLOTS / 2;
+    stream->chunk_samples = (HYDRASDR_STREAM_CHUNK_BYTES_UNPACKED - header) / 2;
+  }
+  else if(use_packing == HYDRASDR_PACKING_8BIT)
+  {
+    stream->chunk_bytes = HYDRASDR_STREAM_CHUNK_BYTES_8BIT;
+    stream->chunk_slots = 1;
+    stream->ring_chunks = HYDRASDR_STREAM_NUM_SLOTS;
+    stream->chunk_samples = HYDRASDR_STREAM_CHUNK_BYTES_8BIT - header;
+  }
+  else
+  {
+    stream->chunk_bytes = HYDRASDR_STREAM_CHUNK_BYTES_PACKED;
+    stream->chunk_slots = 1;
+    stream->ring_chunks = HYDRASDR_STREAM_NUM_SLOTS;
+    stream->chunk_samples = ((HYDRASDR_STREAM_CHUNK_BYTES_PACKED - header) / 3) * 2;
+    if(use_packing == HYDRASDR_PACKING_TIMESTAMP_ON)
+      stream->chunk_samples -= HYDRASDR_STREAM_TIMESTAMP_SAMPLES;
+  }
+}
+
 void set_packing_state(uint8_t state)
 {
-  if(state == 0) /* Packing OFF */
-  {
-    use_packing = HYDRASDR_PACKING_OFF;
-    *usb_bulk_buffer_length = ADCHS_DATA_TRANSFER_SIZE_BYTE;
-  } else if(state == 1) /* Packing ON */
-  {
-    use_packing = HYDRASDR_PACKING_ON;
-    *usb_bulk_buffer_length = DATA_PACKED_BUFFER_LEN;
-  } else if(state == 2) /* Packing+Timestamp ON */
-  {
-    use_packing = HYDRASDR_PACKING_TIMESTAMP_ON;
-    *usb_bulk_buffer_length = DATA_PACKED_BUFFER_LEN;
-  } else // Invalid/not supported set default packing to Packing OFF
-  {
-    use_packing = HYDRASDR_PACKING_OFF;
-    *usb_bulk_buffer_length = ADCHS_DATA_TRANSFER_SIZE_BYTE;
-  }
+  use_packing = (state > HYDRASDR_PACKING_8BIT) ? HYDRASDR_PACKING_ON : (hydrasdr_packing_type)state;
+  publish_stream_format();
+}
+
+void set_framing_state(uint8_t state)
+{
+  use_framing = state ? 1 : 0;
+  publish_stream_format();
+}
+
+static uint32_t adchs_sample_rate_hz;
+
+static uint32_t timing_timer_clock_hz(void)
+{
+  const core_clock_pll1_hs_t* pll1 = &hydrasdr_conf->m4_init_conf.pll1_hs;
+  uint32_t gp_clkin_hz = (hydrasdr_conf->conf_hw.hardware_type & HW_FEATURE_SI5351C) ? 20000000 : 24000000;
+  return (gp_clkin_hz / (pll1->pll1_hs_nsel + 1)) * (pll1->pll1_hs_msel + 1);
 }
 
 void adchs_start(uint8_t chan_num)
@@ -256,19 +340,23 @@ void adchs_start(uint8_t chan_num)
   }
 
   /* Clear ADCHS Buffer */
-  dst = (uint32_t *)ADCHS_DATA_BUFFER;
-  for(i=0; i<(ADCHS_DATA_BUFFER_SIZE_BYTE/4); i++)
+  for(i=0; i<HYDRASDR_STREAM_NUM_PIECES; i++)
   {
-    dst[i] = 0;
+    uint32_t k;
+    dst = (uint32_t *)hydrasdr_stream_pieces[i];
+    for(k=0; k<(HYDRASDR_STREAM_PIECE_SIZE/4); k++)
+    {
+      dst[k] = 0;
+    }
   }
-  clr_usb_buffer_offset();
-  framecounter = 0;
+  stream_reset();
 
   ADCHS_init();
   ADCHS_desc_init(chan_num);
-  ADCHS_DMA_init((uint32_t)ADCHS_DATA_BUFFER, use_packing);
+  ADCHS_DMA_init(use_packing, stream->header_bytes);
 
   led_on();
+  timing_stream_start(adchs_sample_rate_hz, timing_timer_clock_hz());
   LPC_ADCHS->TRIGGER = 1;
   __asm("dsb");
   
@@ -282,6 +370,7 @@ void adchs_stop(void)
   __asm__("cpsid i");
 
   ADCHS_deinit();
+  timing_stream_stop();
 
 //  cpu_clock_pll1_low_speed(&hydrasdr_conf->m4_init_conf.pll1_ls);
 
@@ -291,9 +380,51 @@ void adchs_stop(void)
   __asm__("cpsie i");
 }
 
+__attribute__ ((always_inline)) static inline void dma_chunk_done(uint32_t adc_status)
+{
+  uint32_t produced = dma_chunks_done + 1;
+  uint32_t queued = stream->queued;
+  uint32_t consumed = stream->delivered + stream->lost;
+  uint32_t backlog = produced - consumed;
+  uint32_t overwritten = produced - stream->ring_chunks;
+
+  if(use_packing == HYDRASDR_PACKING_TIMESTAMP_ON)
+  {
+    /* The word the DMA left free ahead of the samples packs into two 12-bit values: the chunk counter and the ADC status */
+    uint32_t* ts = (uint32_t*)(hydrasdr_stream_slot(dma_chunks_done % HYDRASDR_STREAM_NUM_SLOTS) + stream->header_bytes);
+    *ts = (dma_chunks_done & 4095) | (adc_status << 16);
+  }
+
+  dma_chunks_done = produced;
+
+  if(queued != 0)
+  {
+    uint32_t m0_lag = produced - queued;
+
+    if((int32_t)backlog < 0)
+      backlog = 0;
+
+    if(backlog > stream->backlog_max)
+      stream->backlog_max = backlog;
+
+    if(queued - consumed < HYDRASDR_STREAM_USB_POOL && (int32_t)m0_lag > 0 && m0_lag > stream->m0_lag_max)
+      stream->m0_lag_max = m0_lag;
+
+    if((int32_t)(overwritten - consumed) > 0 && (int32_t)(queued - overwritten) > 0)
+      stream->overruns++;
+  }
+
+  if(use_packing == HYDRASDR_PACKING_OFF)
+  {
+    stream->captured = produced;
+    signal_sev();
+  }
+}
+
 void dma_isr(void) 
 {
   uint32_t status;
+  uint32_t adc_status;
   #define INTTC0  (1)
 
 #ifdef DMA_ISR_DEBUG
@@ -336,28 +467,25 @@ void dma_isr(void)
   } 
 #endif
 
+  adc_status = LPC_ADCHS->STATUS0;
+  if(adc_status & STAT0_FIFO_OVERFLOW)
+    stream->adc_overflows++;
+  /* The timestamp mode reports every status bit once per chunk */
+  LPC_ADCHS->CLR_STAT0 = (use_packing == HYDRASDR_PACKING_TIMESTAMP_ON) ? adc_status : (adc_status & STAT0_FIFO_OVERFLOW);
+
+  status = LPC_GPDMA->INTERRSTAT;
+  if(status)
+  {
+    LPC_GPDMA->INTERRCLR = status;
+    stream->dma_errors++;
+  }
+
   status = LPC_GPDMA->INTTCSTAT;
   if( status & INTTC0 )
   {
     LPC_GPDMA->INTTCCLEAR |= INTTC0; /* Clear Chan0 */
 
-    if(use_packing == HYDRASDR_PACKING_TIMESTAMP_ON)
-    {
-        uint32_t ofs = get_usb_buffer_offset_m4();
-        uint32_t* hdr = (uint32_t*)(usb_bulk_buffer+ofs);
-        uint32_t ads = LPC_ADCHS->STATUS0;
-        LPC_ADCHS->CLR_STAT0 = ads;
-        hdr[0]=framecounter|(ads<<16);
-        set_usb_buffer_offset_m4( inc_mask_usb_buffer_offset_m4(ofs, USB_DATA_TRANSFER_SIZE_BYTE/2));
-        framecounter=(framecounter+1)&4095;
-    } else if(use_packing == HYDRASDR_PACKING_ON)
-    {
-        set_usb_buffer_offset_m4( inc_mask_usb_buffer_offset_m4(get_usb_buffer_offset_m4(), USB_DATA_TRANSFER_SIZE_BYTE/2));
-    } else // default HYDRASDR_PACKING_OFF
-    {
-        set_usb_buffer_offset( inc_mask_usb_buffer_offset(get_usb_buffer_offset(), USB_DATA_TRANSFER_SIZE_BYTE) );
-        signal_sev();
-    }
+    dma_chunk_done(adc_status);
   }
 
 #ifdef DMA_ISR_DEBUG
@@ -375,6 +503,8 @@ void m0core_isr(void)
   uint8_t samplerate_cmd;
   uint8_t packing_cmd;
   uint8_t packing_state;
+  uint8_t framing_cmd;
+  uint8_t framing_state;
 
   SLAVE_TXEV_QUIT();
 
@@ -385,10 +515,13 @@ void m0core_isr(void)
     {
       adchs_conf = adchs_conf & (~HYDRASDR_SAMPLERATE_CONF_ALT);
       sys_clock_samplerate(&hydrasdr_conf->m0_m4_alt_conf[adchs_conf].hydrasdr_m4_conf);
+      adchs_sample_rate_hz = hydrasdr_conf->m0_m4_alt_conf[adchs_conf].m0_conf.r82x_if_freq * 4;
     }else
     {
       sys_clock_samplerate(&hydrasdr_conf->m0_m4_conf[adchs_conf].hydrasdr_m4_conf);
+      adchs_sample_rate_hz = hydrasdr_conf->m0_m4_conf[adchs_conf].m0_conf.r82x_if_freq * 4;
     }
+    ADCHS_set_sample_rate(adchs_sample_rate_hz);
     ack_samplerate();
   }
   
@@ -397,6 +530,19 @@ void m0core_isr(void)
   {
     set_packing_state(packing_state);
     ack_packing();
+  }
+
+  framing_cmd = get_framing(&framing_state);
+  if(framing_cmd == SET_FRAMING_CMD)
+  {
+    set_framing_state(framing_state);
+    ack_framing();
+  }
+
+  if(get_sof() == SET_SOF_CMD)
+  {
+    timing_set_sof_divider(*set_sof_divider);
+    ack_sof();
   }
 
   adchs_start_stop_cmd = get_start_stop_adchs();
@@ -470,6 +616,10 @@ void scs_dwt_cycle_counter_enabled(void)
 
 int main(void)
 {
+  SCB_VTOR = (uint32_t)&vector_table;
+
+  watchdog_arm();
+
   scs_dwt_cycle_counter_enabled();
   pin_setup();
   sys_clock_init();
@@ -477,21 +627,27 @@ int main(void)
   nvic_set_priority(NVIC_DMA_IRQ, 255);
   nvic_set_priority(NVIC_M0CORE_IRQ, 1);
 
-  clr_usb_buffer_offset();
+  stream_reset();
 
   nvic_enable_irq(NVIC_DMA_IRQ);
   nvic_enable_irq(NVIC_M0CORE_IRQ);
+
+  adchs_sample_rate_hz = hydrasdr_conf->m0_m4_conf[0].m0_conf.r82x_if_freq * 4;
+  ADCHS_set_sample_rate(adchs_sample_rate_hz);
+  timing_init();
+  HYDRASDR_DEBUG_MAILBOX->pending = 0; /* RAM is not cleared at boot */
 
   adchs_stop();
   adchs_stopped = 1;
   adchs_started = 0;
   
-  use_packing = HYDRASDR_PACKING_OFF;
-  *usb_bulk_buffer_length = ADCHS_DATA_TRANSFER_SIZE_BYTE; /* Packing OFF */
+  set_packing_state(0);
 
   ack_start_stop_adchs();
   ack_samplerate();
   ack_packing();
+  ack_framing();
+  ack_sof();
 
   /* Start M0 */
   m0_startup();
@@ -507,22 +663,40 @@ int main(void)
   CCU1_CLK_PERIPH_CORE_CFG &= ~(1);
 #endif
 
-  usb_bulk_buffer_offset_m4 = &usb_bulk_buffer_offset_uint32_m4;
-  
   while(true)
   {
     signal_wfe();
-  
+
+    if(HYDRASDR_DEBUG_MAILBOX->pending)
+    {
+      typedef uint32_t (*dbg_call_fn_t)(uint32_t, uint32_t, uint32_t, uint32_t);
+      dbg_call_fn_t fn = (dbg_call_fn_t)(HYDRASDR_DEBUG_MAILBOX->address | 1);
+      HYDRASDR_DEBUG_MAILBOX->result = fn(HYDRASDR_DEBUG_MAILBOX->args[0], HYDRASDR_DEBUG_MAILBOX->args[1], HYDRASDR_DEBUG_MAILBOX->args[2], HYDRASDR_DEBUG_MAILBOX->args[3]);
+      HYDRASDR_DEBUG_MAILBOX->pending = 0;
+    }
+
     if(use_packing)
     {
-      /* Thanks to Pierre HB9FUF for the initial packing proof-of-concept */    
-      uint32_t offset = get_usb_buffer_offset_m4();
-      if(offset != last_offset_m4)
+      /* Thanks to Pierre HB9FUF for the initial packing proof-of-concept */
+      while((int32_t)(dma_chunks_done - packed_chunks) > 0)
       {
-        pack((uint32_t*)&usb_bulk_buffer[offset], (uint32_t*)&usb_bulk_buffer[offset], 0x1000);
-        set_usb_buffer_offset( inc_mask_usb_buffer_offset(get_usb_buffer_offset(), 0x2000));    
+        uint32_t epoch = adchs_epoch;
+        uint32_t chunk = packed_chunks;
+        uint32_t* slot = (uint32_t*)(hydrasdr_stream_slot(chunk % HYDRASDR_STREAM_NUM_SLOTS) + stream->header_bytes);
+
+        if(use_packing == HYDRASDR_PACKING_8BIT)
+          pack8(slot, slot, stream->chunk_samples);
+        else if(use_packing == HYDRASDR_PACKING_TIMESTAMP_ON)
+          pack(slot, slot, stream->chunk_samples + HYDRASDR_STREAM_TIMESTAMP_SAMPLES);
+        else
+          pack(slot, slot, stream->chunk_samples);
+
+        if(epoch != adchs_epoch)
+          break;
+
+        packed_chunks = chunk + 1;
+        stream->captured = chunk + 1;
         signal_sev();
-        last_offset_m4 = offset;
       }
     }
   }

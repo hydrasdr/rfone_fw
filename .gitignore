@@ -1,3 +1,19 @@
 /fw_bin/dfuprog_hydrasdr/readback.bin
 /fw_bin/dfuprog_hydrasdr/command_log.txt
 /fw_bin/dfuprog_hydrasdr/lpcdfu_log.txt
+# build outputs
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.srec
+*.list
+*.map
+*.hdr
+*.dfu
+_header.bin
+# build option stamps
+.opts_*
+.watchdog_on
+.watchdog_off

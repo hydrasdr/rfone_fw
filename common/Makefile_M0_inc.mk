@@ -40,7 +40,7 @@ GDB		= $(PREFIX)-gdb
 TOOLCHAIN_DIR := $(shell dirname `which $(CC)`)/../$(PREFIX)
 
 CFLAGS += -std=gnu99 -Os -g2 -Wall -Wextra -I$(LIBOPENCM3)/include -I../common \
-		 -mthumb -DTHUMB -mcpu=cortex-m0 -flto -ffunction-sections -fdata-sections \
+		 -mthumb -DTHUMB -mcpu=cortex-m0 -MD -flto -ffunction-sections -fdata-sections \
         $(HYDRASDR_OPTS)
 
 LDFLAGS += -mcpu=cortex-m0 -mthumb -DTHUMB \
@@ -50,6 +50,15 @@ LDFLAGS += -mcpu=cortex-m0 -mthumb -DTHUMB \
 		-Wl,--gc-sections -Xlinker -Map=$(BINARY).map
 
 OBJ += $(SRC:.c=.o)
+
+ifeq ($(WATCHDOG),1)
+CFLAGS += -DHYDRASDR_HOST_WATCHDOG=1
+endif
+# make NOFLASH=1 builds for a board without the SPI flash
+ifeq ($(NOFLASH),1)
+CFLAGS += -DHYDRASDR_NO_FLASH=1
+endif
+OPTS_STAMP = .opts_w$(WATCHDOG)_f$(NOFLASH)
 
 # Be silent per default, but 'make V=1' will show all compiler calls.
 ifneq ($(V),1)
@@ -63,6 +72,7 @@ endif
 .SECONDEXPANSION:
 .SECONDARY:
 
+.DEFAULT_GOAL := all
 all: images
 
 images: $(BINARY).images
@@ -112,6 +122,7 @@ program: $(BINARY).dfu
 
 clean:
 	$(Q)rm -f *.o
+	$(Q)rm -f .opts_* .watchdog_on .watchdog_off
 	$(Q)rm -f *.d
 	$(Q)rm -f *.elf
 	$(Q)rm -f *.bin
@@ -137,3 +148,8 @@ FORCE:
 #	python ../scripts/hydrasdr_fw-version.py ./$@
 
 -include $(OBJ:.o=.d)
+
+$(OPTS_STAMP):
+	$(Q)rm -f .opts_*
+	$(Q)touch $@
+$(OBJ): $(OPTS_STAMP)

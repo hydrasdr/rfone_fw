@@ -23,11 +23,21 @@
 #define __M0_H__
 
 #include "hydrasdr_commands.h"
+#include "hydrasdr_stream.h"
+#include "usb_type.h"
 
 void ADCHS_start(uint8_t conf_num);
 void ADCHS_stop(uint8_t conf_num);
 
 void set_samplerate_m4(uint8_t conf_num);
 void set_packing_m4(uint8_t state);
+void set_framing_m4(uint8_t state);
+void set_sof_divider_m4(uint32_t divider);
+
+/* Ring buffer state shared with the M4 */
+extern volatile hydrasdr_stream_state_t * const stream;
+
+/* Bulk IN completion callback, USB ISR context */
+void usb_bulk_in_transfer_complete(usb_endpoint_t* const endpoint);
 
 #endif//__M0_H__

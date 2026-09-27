@@ -95,7 +95,13 @@ isp_iap_ret_code_t iap_cmd_call(iap_cmd_res_t* iap_cmd_res)
         /* Only 64bits used */
         iap_cmd_res->status_res.iap_result[0] = 0;
         iap_cmd_res->status_res.iap_result[1] = 0;
+#ifdef HYDRASDR_NO_FLASH
+        p_u32_data = (uint32_t*)ROM_OTP_PART_ID_ADDR;
+        iap_cmd_res->status_res.iap_result[2] = p_u32_data[1];
+        iap_cmd_res->status_res.iap_result[3] = p_u32_data[2];
+#else
         w25q80bv_get_unique_id( (w25q80bv_unique_id_t*)&iap_cmd_res->status_res.iap_result[2] );
+#endif
         iap_cmd_res->status_res.status_ret = CMD_SUCCESS;
       break;
       

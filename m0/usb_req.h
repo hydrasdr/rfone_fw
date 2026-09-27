@@ -32,6 +32,39 @@ extern usb_device_t usb_device;
 
 extern uint8_t sample_rate_conf_no;
 
+typedef struct {
+  uint64_t freq_hz;
+} set_freq_params_t;
+
+/* Last frequency the host asked for */
+extern set_freq_params_t set_freq_params;
+
+typedef enum
+{
+  DEFERRED_NONE = 0,
+  DEFERRED_R82X_READ,
+  DEFERRED_R82X_WRITE,
+  DEFERRED_SET_FREQ,
+  DEFERRED_LNA_GAIN,
+  DEFERRED_MIXER_GAIN,
+  DEFERRED_VGA_GAIN,
+  DEFERRED_LNA_AGC,
+  DEFERRED_MIXER_AGC,
+  DEFERRED_SET_RF_PORT
+} deferred_kind_t;
+
+typedef struct
+{
+  volatile uint32_t pending;
+  deferred_kind_t kind;
+  usb_endpoint_t* endpoint;
+  uint32_t index;
+  uint32_t value;
+} deferred_job_t;
+
+extern deferred_job_t deferred_job;
+void deferred_job_run(void); /* main loop */
+
 void usb_req_init(void);
 
 void usb_streaming_disable(void);

@@ -1,3 +1,15 @@
+#ifdef HYDRASDR_NO_FLASH
+#include <stdint.h>
+#include <string.h>
+#include "w25q80bv.h"
+void w25q80bv_setup(void) {}
+void w25q80bv_chip_erase(void) {}
+void w25q80bv_sector_erase(const uint32_t addr) { (void)addr; }
+void w25q80bv_program(uint32_t addr, uint32_t len, const uint8_t* data) { (void)addr; (void)len; (void)data; }
+uint8_t w25q80bv_get_device_id(void) { return 0; }
+void w25q80bv_get_unique_id(w25q80bv_unique_id_t* unique_id) { memset(unique_id, 0, sizeof(*unique_id)); }
+void w25q80bv_read(uint32_t addr, uint32_t len, uint8_t* const data) { (void)addr; memset(data, 0xFF, len); }
+#else
 /*
  * Copyright 2013 Michael Ossmann
  * Copyright 2013-2016 Benjamin Vernoux
@@ -28,6 +40,7 @@
 
 #include <stdint.h>
 #include "w25q80bv.h"
+#include "watchdog.h"
 #include "core.h"
 #include <libopencm3/lpc43xx/ssp.h>
 #include <libopencm3/lpc43xx/scu.h>
@@ -175,7 +188,10 @@ void w25q80bv_get_unique_id(w25q80bv_unique_id_t* unique_id)
 
 void w25q80bv_wait_while_busy(void)
 {
-  while (w25q80bv_get_status() & W25Q80BV_STATUS_BUSY);
+  while (w25q80bv_get_status() & W25Q80BV_STATUS_BUSY)
+  {
+    watchdog_feed();
+  }
 }
 
 void w25q80bv_write_enable(void)
@@ -329,3 +345,4 @@ void w25q80bv_read(uint32_t addr, uint32_t len, uint8_t* const data)
     data[i] = ssp_transfer(SSP0_NUM, 0xFF);
   gpio_set(PORT_SSP0_SSEL, PIN_SSP0_SSEL);
 }
+#endif /* HYDRASDR_NO_FLASH */

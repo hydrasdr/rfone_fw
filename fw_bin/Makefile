@@ -24,7 +24,7 @@ BINARY = hydrasdr_rfone_fw
 
 SRC_DIR = m4
 
-SRC = m4.c adchs.c
+SRC = m4.c adchs.c timing.c
 
 OBJ = m0_bin.o m0s_bin.o
 
@@ -37,7 +37,8 @@ SRC += \
 	w25q80bv.c \
 	rom_iap.c \
 	signal_mcu.c \
-	hydrasdr_rfone_conf.c
+	hydrasdr_rfone_conf.c \
+	watchdog.c
 
 LDSCRIPT = ../common/LPC4370_M4_rom_to_ram.ld
 
@@ -47,3 +48,14 @@ LDSCRIPT = ../common/LPC4370_M4_rom_to_ram.ld
 
 include ../common/Makefile_inc.mk
 
+# The M0 and M0s images are pulled in with .incbin
+m0_bin.o: ../m0/m0.bin
+m0s_bin.o: ../m0s/m0s.bin
+../m0/m0.bin: ;
+../m0s/m0s.bin: ;
+
+# RAM-only image for the LPC4370 ROM DFU mode
+dfu:
+	$(Q)$(MAKE) BINARY=hydrasdr_dfu LDSCRIPT=../common/LPC4370_M4_dfu.ld hydrasdr_dfu.dfu
+
+.PHONY: dfu

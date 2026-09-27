@@ -20,7 +20,7 @@
  */
 #include "hydrasdr_conf.h"
 
-#define HYDRASDR_CONF_M0_M4_NB (3)
+#define HYDRASDR_CONF_M0_M4_NB (4)
 #define HYDRASDR_CONF_M0_M4_ALT_NB (4)
 #define HYDRASDR_CONF_SI5351C_NB (2)
 #define NULL_ADDR (0)
@@ -220,6 +220,27 @@ hydrasdr_rfone_conf_t __attribute__ ((section(".nocopy_data"))) hydrasdr_rfone_c
 			{
 				1250000, // Freq 5MHz => 2.5MHz IQ => IF Freq = 1.25MHz (r82x_if_freq)
 				0, // uint8_t r82x_bw;
+				0, // uint8_t padding0;
+				0 // uint16_t padding1;
+			}
+		},
+		/* Conf 3 => 15 MSPS IQ (30 MSPS real, meant for the 8-bit mode: 30 MB/s on the wire) */
+		{
+			/*
+				core_clock_pll0_idivb_t hydrasdr_m4_conf
+			*/
+			{
+				/* PLL0AUDIO from GP_CLKIN 20 MHz: M = 12, P = 8 (FCCO 480 MHz), Fout = 20 * 12 / 8 = 30 MHz */
+				0x000003FF, // uint32_t pll0audio_mdiv; MDEC(12)
+				0x0000000B, // uint32_t pll0audio_npdiv; PDEC(8)
+				PLL0AUDIO_CTRL_FLAG_DIRECT_I, // uint32_t pll0audio_ctrl_flags;
+				0, // uint8_t adchs_idivb;
+				{ 0, 0, 0 } /* uint8_t padding[3] */
+			},
+			/* m0_conf_t m0_conf */
+			{
+				7500000, // Freq 30MHz => 15MHz IQ => IF Freq = 7.5MHz (r82x_if_freq)
+				63, // uint8_t r82x_bw; widest
 				0, // uint8_t padding0;
 				0 // uint16_t padding1;
 			}

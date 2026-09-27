@@ -320,6 +320,9 @@ static void usb_controller_set_device_mode(void)
   // Set USB0 peripheral mode
   USB0_USBMODE_D = USB0_USBMODE_D_CM1_0(2);
 
+#define USB0_SBUSCFG MMIO32(USB0_BASE + 0x090)
+  USB0_SBUSCFG = 2; /* AHB_BRST: INCR8 */
+
   // Set device-related OTG flags
   // OTG termination: controls pull-down on USB_DM
   // VBUS_Discharge: VBUS discharges through resistor

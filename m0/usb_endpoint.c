@@ -22,6 +22,7 @@
 #include "usb_endpoint.h"
 #include <usb_request.h>
 #include "usb_device.h"
+#include "m0.h"
 
 usb_endpoint_t usb_endpoint_control_out = {
   .address = 0x00,
@@ -49,9 +50,9 @@ usb_endpoint_t usb_endpoint_bulk_in = {
   .in = &usb_endpoint_bulk_in,
   .out = 0,
   .setup_complete = 0,
-  .transfer_complete = usb_queue_transfer_complete,
+  .transfer_complete = usb_bulk_in_transfer_complete,
 };
-static USB_DEFINE_QUEUE(usb_endpoint_bulk_in, 1);
+static USB_DEFINE_QUEUE(usb_endpoint_bulk_in, HYDRASDR_STREAM_USB_POOL);
 
 usb_endpoint_t usb_endpoint_bulk_out = {
   .address = 0x02,

@@ -25,6 +25,9 @@
 #include "core.h"
 #include "hydrasdr_conf.h"
 #include "hydrasdr_calib.h"
+#include "hydrasdr_stream.h"
+#include "hydrasdr_commands.h"
+#include "w25q80bv.h"
 #include "si5351c.h"
 #include <libopencm3/lpc43xx/i2c.h>
 #include <libopencm3/lpc43xx/ccu.h>
@@ -36,6 +39,8 @@
 #include <libopencm3/lpc43xx/rgu.h>
 
 #define ROMFLASH_BASE_ADDR (0x80000000UL)
+
+#define IMAGE_IN_RAM() (((uint32_t)&hydrasdr_rfone_conf) >= 0x10000000UL)
 
 #define WAIT_CPU_CLOCK_INIT_DELAY (10000)  /* Wait about 150us@200Mhz, 300us@96MHz & 2400us@12Mhz (about 3cycles*20000) */
 #define WAIT_R82X_POWER_ON_DELAY (100000) /* Wait about 1500us@200Mhz, 3000us@96MHz & 24000us@12Mhz (about 3cycles*100000) */
@@ -360,6 +365,7 @@ void sys_clock_init(void)
   uint16_t nb_struct_u16;
   hydrasdr_calib_t hydrasdr_calib = { 0 };
   hydrasdr_calib_t* hydrasdr_calib_flash;
+  uint8_t apply_calib = 0;
 
   /* After boot the CPU runs at 96 MHz */
   /* cpu runs from: IRC (12MHz) >> PLL M = 24, FCCO @ 288 MHz direct mode >> IDIVC = 4 >> 96 MHz */
@@ -393,9 +399,7 @@ void sys_clock_init(void)
   CGU_BASE_APB3_CLK = CGU_BASE_APB3_CLK_AUTOBLOCK
       | CGU_BASE_APB3_CLK_CLK_SEL(CGU_SRC_XTAL);
 
-  /* ********************** */
   /*  SI5351c configuration */
-  /* ********************** */
   /*
    * xxMHz clock is entering LPC GP_CLKIN (from SI5351C) input now.
    * HydraSDR clocks:
@@ -415,7 +419,8 @@ void sys_clock_init(void)
   {
 		/* Continue init using HydraSDR RFOne configuration */
 		addr = (uint32_t)&hydrasdr_rfone_conf;
-		addr = (addr | ROMFLASH_BASE_ADDR); /* Fix with Addr from ROMFLASH */
+		if(!IMAGE_IN_RAM())
+			addr = (addr | ROMFLASH_BASE_ADDR); /* Fix with Addr from ROMFLASH */
 		src = (unsigned char *)addr;
 		/* Copy the configuration from Flash to SRAM */
 		for (dest = (unsigned char *)hydrasdr_conf; (uint32_t)dest < (((uint32_t)hydrasdr_conf) + HYDRASDR_CONF_MAX_DATA_SIZE); )
@@ -454,11 +459,14 @@ void sys_clock_init(void)
   hydrasdr_conf->r82x_conf_rw.if_freq = hydrasdr_conf->m0_m4_conf[0].m0_conf.r82x_if_freq;
 
   /* Load calibration data */
-  addr = (ROMFLASH_BASE_ADDR + HYDRASDR_FLASH_CALIB_OFFSET); /* Addr from Flash Configuration 0 (Calibration Data) */
-  hydrasdr_calib_flash = (hydrasdr_calib_t*)(addr);
-  hydrasdr_calib.header = hydrasdr_calib_flash->header;
-  hydrasdr_calib.timestamp = hydrasdr_calib_flash->timestamp;
-  hydrasdr_calib.correction_ppb = hydrasdr_calib_flash->correction_ppb;
+  if(!IMAGE_IN_RAM())
+  {
+    addr = (ROMFLASH_BASE_ADDR + HYDRASDR_FLASH_CALIB_OFFSET); /* Addr from Flash Configuration 0 (Calibration Data) */
+    hydrasdr_calib_flash = (hydrasdr_calib_t*)(addr);
+    hydrasdr_calib.header = hydrasdr_calib_flash->header;
+    hydrasdr_calib.timestamp = hydrasdr_calib_flash->timestamp;
+    hydrasdr_calib.correction_ppb = hydrasdr_calib_flash->correction_ppb;
+  }
 
   if((hydrasdr_conf->conf_hw.hardware_type & HW_FEATURE_SI5351C) == HW_FEATURE_SI5351C)
   {
@@ -480,11 +488,7 @@ void sys_clock_init(void)
       /* Apply SI5351C configuration */
       si5351c_hydrasdr_config(&hydrasdr_conf->si5351c_config[HYDRASDR_SI5351C_CONFIG_XTAL]);
 
-      /* Check calibration is valid / enabled */
-      if(hydrasdr_calib.header == HYDRASDR_FLASH_CALIB_HEADER)
-      {
-        hydrasdr_conf->r82x_conf_rw.xtal_freq = sys_calib_r82x(hydrasdr_conf->r82x_conf_rw.xtal_freq, hydrasdr_calib.correction_ppb);
-      }
+      apply_calib = 1;
     }else
     {
         si5351c_hydrasdr_config(&hydrasdr_conf->si5351c_config[HYDRASDR_SI5351C_CONFIG_CLKIN]);
@@ -500,18 +504,12 @@ void sys_clock_init(void)
     si5351c_read[3] = si5351c_read_single(0);
   }else
   {
-    /* Check calibration is valid / enabled */
-    if(hydrasdr_calib.header == HYDRASDR_FLASH_CALIB_HEADER)
-    {
-      hydrasdr_conf->r82x_conf_rw.xtal_freq = sys_calib_r82x(hydrasdr_conf->r82x_conf_rw.xtal_freq, hydrasdr_calib.correction_ppb);
-    } /* else invalid calibration => do not change xtal_freq keep default value */
+    apply_calib = 1;
   }
 
   pt_core_clocks_conf = &hydrasdr_conf->m4_init_conf;
 
-  /* ********************************************************************* */
   /*  M4/M0 core, Peripheral, APB1, APB3 Configuration (PLL1 clock source) */
-  /* ********************************************************************* */
   /* Configure PLL1 with CGU_SRC_GP_CLKIN as source clock */
   cpu_clock_pll1_low_speed(&pt_core_clocks_conf->pll1_ls);
 
@@ -520,11 +518,24 @@ void sys_clock_init(void)
   /* Configure I2C1 (for R82X) to 400kHz when we switch over to APB3 clock = PLL1 */
   i2c1_init(hydrasdr_conf->i2c_conf.i2c1_pll1_ls_conf_val);
 
-  /* ************************************************** */
   /* Connect PLL1 to M4/M0 core, Peripheral, APB1, APB3 */
-  /* ************************************************** */
   /* Use PLL1 as clock source for BASE_M4_CLK (CPU) */
   CGU_BASE_M4_CLK = (CGU_BASE_M4_CLK_CLK_SEL(CGU_SRC_PLL1) | CGU_BASE_M4_CLK_AUTOBLOCK);
+
+  HYDRASDR_STREAM_STATE->calib_xtal_nominal = hydrasdr_conf->r82x_conf_rw.xtal_freq;
+  HYDRASDR_STREAM_STATE->calib_ppb = 0;
+  HYDRASDR_STREAM_STATE->calib_source = HYDRASDR_CALIBRATION_SOURCE_NONE;
+  if(IMAGE_IN_RAM())
+  {
+    w25q80bv_setup();
+    w25q80bv_read(HYDRASDR_FLASH_CALIB_OFFSET, sizeof(hydrasdr_calib_t), (uint8_t*)&hydrasdr_calib);
+  }
+  if(apply_calib && (hydrasdr_calib.header == HYDRASDR_FLASH_CALIB_HEADER))
+  {
+    hydrasdr_conf->r82x_conf_rw.xtal_freq = sys_calib_r82x(hydrasdr_conf->r82x_conf_rw.xtal_freq, hydrasdr_calib.correction_ppb);
+    HYDRASDR_STREAM_STATE->calib_ppb = hydrasdr_calib.correction_ppb;
+    HYDRASDR_STREAM_STATE->calib_source = HYDRASDR_CALIBRATION_SOURCE_FLASH;
+  }
 
   /* Switch peripheral clock over to use PLL1 */
   CGU_BASE_PERIPH_CLK = CGU_BASE_PERIPH_CLK_AUTOBLOCK
@@ -538,9 +549,7 @@ void sys_clock_init(void)
   CGU_BASE_APB3_CLK = CGU_BASE_APB3_CLK_AUTOBLOCK
       | CGU_BASE_APB3_CLK_CLK_SEL(CGU_SRC_PLL1);
 
-  /* **************************************************** */
   /* PLL0USB & USB0 Configuration (GP_CLKIN clock source) */
-  /* **************************************************** */
   /* Use CGU_SRC_GP_CLKIN as clock source for PLL0USB */
   CGU_PLL0USB_CTRL = CGU_PLL0USB_CTRL_PD
       | CGU_PLL0USB_CTRL_AUTOBLOCK
@@ -562,9 +571,7 @@ void sys_clock_init(void)
   CGU_BASE_USB0_CLK = CGU_BASE_USB0_CLK_AUTOBLOCK
       | CGU_BASE_USB0_CLK_CLK_SEL(CGU_SRC_PLL0USB);
 
-  /* ****************************************** */
   /* Disable/PowerDown unused clock/peripherals */
-  /* ****************************************** */
   CREG_CREG6 |= (1<<17); // PowerDown RNG
 
   /* Disable XTAL because GP_CLKIN is used from SI5351C instead */
@@ -631,7 +638,6 @@ void sys_clock_init(void)
   CCU1_CLK_M4_EMCDIV_CFG &= ~(1);
   //CCU1_CLK_M4_M0APP_CFG &= ~(1);
   //CCU1_CLK_M4_VADC_CFG &= ~(1);
-  CCU1_CLK_M4_WWDT_CFG &= ~(1);
   CCU1_CLK_M4_USART0_CFG &= ~(1);
   CCU1_CLK_M4_UART1_CFG &= ~(1);
   CCU1_CLK_M4_SSP0_CFG &= ~(1);
@@ -650,9 +656,7 @@ void sys_clock_init(void)
 
   CCU1_CLK_PERIPH_SGPIO_CFG &= ~(1);
 
-  /* ******************************************** */
   /*  ADCHS Configuration (GP_CLKIN clock source) */
-  /* ******************************************** */
   sys_clock_samplerate(&hydrasdr_conf->m0_m4_conf[0].hydrasdr_m4_conf);
 }
 

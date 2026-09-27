@@ -40,7 +40,7 @@ GDB		= $(PREFIX)-gdb
 TOOLCHAIN_DIR := $(shell dirname `which $(CC)`)/../$(PREFIX)
 
 CFLAGS += -std=gnu99 -Os -g2 -Wall -Wextra -I$(LIBOPENCM3)/include -I../common \
-		 -mthumb -DTHUMB -mcpu=cortex-m0 -flto -ffunction-sections -fdata-sections \
+		 -mthumb -DTHUMB -mcpu=cortex-m0 -MD -flto -ffunction-sections -fdata-sections \
         $(HYDRASDR_OPTS)
 
 LDFLAGS += -mcpu=cortex-m0 -mthumb -DTHUMB \
@@ -63,6 +63,7 @@ endif
 .SECONDEXPANSION:
 .SECONDARY:
 
+.DEFAULT_GOAL := all
 all: images
 
 images: $(BINARY).images

@@ -74,8 +74,17 @@ int usb_transfer_schedule_block(
 
 int usb_transfer_schedule_ack(const usb_endpoint_t* const endpoint);
 
+/* Data stage of a control IN request: sends length bytes */
+int usb_control_reply(usb_endpoint_t* const endpoint, void* const data, uint32_t length);
+
 void usb_queue_init(usb_queue_t* const queue);
 
 void usb_queue_transfer_complete(usb_endpoint_t* const endpoint);
+
+/* Transfers retired with an error */
+extern volatile uint32_t usb_queue_transfer_errors;
+
+/* Number of transfers queued on the endpoint that have not completed yet */
+unsigned int usb_queue_active_count(const usb_endpoint_t* const endpoint);
 
 #endif//__USB_QUEUE_H__

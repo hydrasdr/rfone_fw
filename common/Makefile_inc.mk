@@ -55,6 +55,12 @@ LDFLAGS += -mcpu=cortex-m4 -mthumb -DTHUMB -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
 		-Wl,--gc-sections -Xlinker -Map=$(BINARY).map
 OBJ += $(SRC:.c=.o)
 
+# make NOFLASH=1: board without the SPI flash
+ifeq ($(NOFLASH),1)
+CFLAGS += -DHYDRASDR_NO_FLASH=1
+endif
+OPTS_STAMP = .opts_f$(NOFLASH)
+
 # Be silent per default, but 'make V=1' will show all compiler calls.
 ifneq ($(V),1)
 Q := @
@@ -67,24 +73,24 @@ endif
 .SECONDEXPANSION:
 .SECONDARY:
 
+.DEFAULT_GOAL := all
 all: images
 
 images: $(BINARY).images
 flash: $(BINARY).flash
 
 program: $(BINARY).dfu
-	$(Q)dfu-util --device 1fc9:000c --alt 0 --download $(BINARY).dfu
+	$(Q)dfu-util -d 1fc9:000c -t 2048 -R -D $(BINARY).dfu
 
 %.images: %.bin %.hex %.srec %.list
 	@#echo "*** $* images generated ***"
 
+# LPC43xx ROM DFU image: 16-byte boot header
 %.dfu: %.bin
-	$(Q)rm -f _tmp.dfu _header.bin
-	$(Q)cp $(*).bin _tmp.dfu
-	$(Q)dfu-suffix --vid=0x1fc9 --pid=0x000c --did=0x0 -s 0 -a _tmp.dfu
-	$(Q)python -c "import os.path; import struct; print('0000000: da ff ' + ' '.join(map(lambda s: '%02x' % ord(s), struct.pack('<H', os.path.getsize('$(*).bin') / 512 + 1))) + ' ff ff ff ff')" | xxd -g1 -r > _header.bin
-	$(Q)cat _header.bin _tmp.dfu >$(*).dfu
-	$(Q)rm -f _tmp.dfu _header.bin
+	$(Q)rm -f _header.bin
+	$(Q)python -c "import os,struct,sys; d=struct.pack('<BBH8sI',0x1a,0x3f,(os.path.getsize('$(*).bin')+511)//512,b'',0xffffffff); getattr(sys.stdout,'buffer',sys.stdout).write(d)" > _header.bin
+	$(Q)cat _header.bin $(*).bin >$(*).dfu
+	$(Q)rm -f _header.bin
 
 %.bin: %.elf
 	@#printf "  OBJCOPY $(*).bin\n"
@@ -116,6 +122,7 @@ program: $(BINARY).dfu
 
 clean:
 	$(Q)rm -f *.o
+	$(Q)rm -f .opts_*
 	$(Q)rm -f *.d
 	$(Q)rm -f *.elf
 	$(Q)rm -f *.bin
@@ -133,3 +140,8 @@ clean:
 .PHONY: images clean
 
 -include $(OBJ:.o=.d)
+
+$(OPTS_STAMP):
+	$(Q)rm -f .opts_*
+	$(Q)touch $@
+$(OBJ): $(OPTS_STAMP)

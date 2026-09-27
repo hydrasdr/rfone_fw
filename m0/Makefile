@@ -26,6 +26,7 @@ BINARY = m0
 SRC = m0.c\
 	rx.c \
 	usb_req.c \
+	uart.c \
 	usb_descriptor.c \
 	usb_device.c \
 	usb_endpoint.c
@@ -38,6 +39,7 @@ SRC += \
 	si5351c.c \
 	r82x.c \
 	w25q80bv.c \
+	watchdog.c \
 	rom_iap.c \
 	signal_mcu.c \
 	usb.c \

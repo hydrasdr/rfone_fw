@@ -26,8 +26,10 @@ MEMORY
 	rom_flash (rx)  : ORIGIN = 0x80000000, LENGTH =  1M
 	/* rom is really the shadow region that points to SPI flash or elsewhere */
 	rom (rx)  : ORIGIN = 0x00000000, LENGTH =  1M
-	ram_local1 (rwx) : ORIGIN = 0x10000000, LENGTH =  128K
-	ram_local2 (rwx) : ORIGIN = 0x10080000, LENGTH =  72K
+	ram_local1 (rwx) : ORIGIN = 0x10000000, LENGTH =  32K
+	ram_local1_usb (rwx) : ORIGIN = 0x10008000, LENGTH =  96K
+	ram_local2_usb (rwx) : ORIGIN = 0x10080000, LENGTH =  64K
+	ram_local2 (rwx) : ORIGIN = 0x10090000, LENGTH =  8K
 	/* LPC437x only: Reserved for M0 subsystem SRAM 16KB + 2KB  */
 	ram_local_m0sub (rwx) : ORIGIN = 0x18000000, LENGTH =  18K
 
@@ -37,14 +39,8 @@ MEMORY
 	ram_ahb1_adchs (rwx)    : ORIGIN = 0x20002000, LENGTH =  4K
 	ram_ahb1_m0_share (rwx) : ORIGIN = 0x20003000, LENGTH =  4K
 
-	/* Removed 32K of AHB SRAM for USB buffer. Straddles two blocks of RAM
-	 * to get performance benefit of having two USB buffers addressable
-	 * simultaneously (on two different buses of the AHB multilayer matrix)
-	 */
-	/* ram_ahb1_0 (rwx) : ORIGIN = 0x20004000, LENGTH =  16K */
-	/* ram_ahb1_1 (rwx) : ORIGIN = 0x20008000, LENGTH =  16K */
-	/* Reserved for Cortex M0 code/data */
-	ram_ahb2   (rwx) : ORIGIN = 0x2000C000, LENGTH =  16K
+	ram_ahb2   (rwx) : ORIGIN = 0x20004000, LENGTH =  32K
+	ram_ahb2_usb (rwx) : ORIGIN = 0x2000C000, LENGTH =  16K
 }
 
 cm4_data_share = ORIGIN(ram_ahb1_m4_share);	/* M4 data shared (write by M4 read by M0 */
